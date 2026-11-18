@@ -1,0 +1,495 @@
+# Market Updater — sectors and sources config (draft, 18 Nov 2026)
+#
+# Edit this file to change coverage; no code changes needed.
+#
+# Conventions
+#   verify: true  -> URL or ticker not yet checked. The setup script
+#                    (scripts/check_sources.py) tests it before the first run
+#                    and writes the working feed URL back here.
+#   url: null     -> no known feed yet; `find` says where to look.
+#   lean          -> the voice's usual stance (bull / bear / mixed). Used to
+#                    balance the "Where views diverge" section, not to filter.
+#   contrarian    -> true for people with a public record of calls against
+#                    consensus (not the same as a record of being right).
+#   priority      -> true = covered every time they publish, on any channel.
+#   interested    -> true when the voice's employer profits from their view.
+
+schedule:
+  timezone: Europe/London
+  weekdays_only: true
+  collect_at: "05:00"
+  market_snapshot_at: "06:15"
+  publish_by: "06:45"
+  health_check_at: "06:55"
+  friday_deep_dive: true
+
+delivery:
+  notion:
+    briefings_database: "Daily Briefings"
+    views_database: "Views"
+    inbox_database: "Inbox"
+  telegram_alerts: failures_only
+
+models:
+  # Claude API on the Max plan's $100/month credit (link a Console org in
+  # claude.ai Settings > Billing). Groq free tier is the fallback.
+  extract: {provider: anthropic, model: claude-haiku-5-5, fallback: groq}
+  write: {provider: anthropic, model: claude-sonnet-5-5, fallback: groq}
+  earnings_review: {provider: anthropic, model: claude-sonnet-5-5, fallback: groq}
+  trade_ideas: {provider: anthropic, model: claude-opus-5-5, fallback: skip}
+  transcription: {provider: groq, model: whisper-large-v3-turbo}
+  credit_guard:
+    monthly_credit_usd: 100
+    move_extraction_to_fallback_at_usd: 80
+
+settings_source: notion        # Notion settings databases are the live copy;
+                               # this file is the seed and the nightly backup.
+
+trade_ideas:
+  per_day: [3, 4]
+  min_against_crowded_consensus: 1
+  max_per_sector: 2
+  legs_from: [watchlists, sector_proxies]
+  min_pair_correlation_1y: 0.5
+  hedge_ratio: beta_1y_daily
+  spread_zscore_window_days: 60
+  stop_spread_vol_multiple: 1.5
+  max_holding_trading_days: 20
+  label: "Idea for research, not advice"
+  comps:
+    peers_per_idea: [3, 4]          # plus both legs; same subsector, from watch lists
+    metrics: [market_cap, ev, ev_sales_ltm, ev_ebitda_ltm, pe_ltm, pe_fwd, consensus_eps_fwd,
+              revenue_growth_ltm, ebitda_margin, roic, net_debt_ebitda, return_1m, return_ytd, next_earnings]
+    sources:
+      fundamentals: roic_ai          # free plan, worldwide, 5 requests/min
+      forward_estimates: yfinance    # Yahoo consensus; unofficial, flagged in the table
+      us_cross_check: finnhub
+      prices: [stooq, yfinance]
+    show_peer_median: true
+    show_premium_discount_vs_median: true
+    cache_fundamentals_until_next_report: true
+
+earnings:
+  full_reviews_per_day: 5
+  also_review_if_move_pct: 7.0       # any large company outside the watch lists
+  reaction_vs_history_quarters: 8
+  transcript_sources: [roic_ai, alpha_vantage, webcast_audio_whisper]
+  compare_with_previous_call: true
+
+budget:
+  target_words: [2500, 3200]   # about 11–14 minutes
+  words_per_section:
+    top_line: 150
+    market_overview: 500
+    core_sector: 450           # each of the four core sectors
+    elsewhere: 200
+    views_diverge: 450
+    friday_deep_dive: 700
+
+thresholds:
+  elsewhere_sector_move_pct: 2.0
+  elsewhere_single_stock_move_pct: 7.0
+  earnings_surprise_pct: 5.0          # actual vs consensus EPS
+  consensus_window_trading_days: 10
+  crowded_consensus_share: 0.75
+  crowded_min_speakers: 5
+  narrative_cracking_drop: 0.20       # fall in consensus share within a week
+  priority_voice_weight: 2.0
+  story_dedupe_days: 3
+  price_source_disagreement_pct: 0.5
+
+# ── Market overview ──────────────────────────────────────────────────
+# Canonical tickers are Yahoo-style; the Stooq equivalents are mapped in code.
+markets:
+  indices:
+    - {name: "S&P 500", ticker: "^GSPC", region: US}
+    - {name: "Nasdaq 100", ticker: "^NDX", region: US}
+    - {name: "FTSE 100", ticker: "^FTSE", region: UK}
+    - {name: "FTSE 250", ticker: "^FTMC", region: UK, verify: true}
+    - {name: "Euro Stoxx 50", ticker: "^STOXX50E", region: Europe}
+    - {name: "DAX", ticker: "^GDAXI", region: Europe}
+    - {name: "Nikkei 225", ticker: "^N225", region: Asia}
+    - {name: "Hang Seng", ticker: "^HSI", region: Asia}
+    - {name: "CSI 300", ticker: "000300.SS", region: Asia, verify: true}
+    - {name: "KOSPI", ticker: "^KS11", region: Asia}
+    - {name: "VIX", ticker: "^VIX", region: US}
+  rates:
+    - {name: "UST 2y", source: fred, series: DGS2}
+    - {name: "UST 10y", source: fred, series: DGS10}
+    - {name: "Gilt 10y", source: boe, series: null, verify: true}
+    - {name: "Bund 10y", source: bundesbank, series: null, verify: true}
+  commodities:
+    - {name: "Brent", ticker: "BZ=F"}
+    - {name: "WTI", ticker: "CL=F"}
+    - {name: "Gold", ticker: "GC=F"}
+    - {name: "Copper", ticker: "HG=F"}
+    - {name: "TTF gas", ticker: "TTF=F", verify: true}
+  macro_sources:
+    - {name: FRED, kind: api, key_env: FRED_API_KEY}
+    - {name: ECB Data Portal, kind: api}
+    - {name: ONS, kind: api}
+    - {name: Bank of England Database, kind: api}
+  central_banks: [Fed, ECB, BoE, BoJ, PBoC]
+  # Meeting dates are entered once a year from each central bank's calendar.
+  meeting_dates: {}
+
+# ── Sectors ──────────────────────────────────────────────────────────
+# order = order in the briefing. core: true = full section every day.
+# Set core: false to move a sector to "Elsewhere"; add a new block to cover a
+# new sector.
+sectors:
+  - id: tmt
+    name: "TMT"
+    core: true
+    order: 1
+    subsectors: ["Semis and AI infrastructure", "Internet platforms", "Advertising and media"]
+    proxies:
+      - {ticker: SMH, name: "US semis"}
+      - {ticker: XLK, name: "US tech"}
+      - {ticker: XLC, name: "US communication services"}
+      - {ticker: EXV3.DE, name: "STOXX Europe 600 Technology", verify: true}
+    watchlist: [NVDA, AVGO, AMD, TSM, ASML, MU, MSFT, GOOGL, META, AMZN, ORCL, CRWV, PUB.PA, WPP.L]
+    keywords: [GPU, hyperscaler, capex, data centre, HBM, advertising, CPM]
+    debates: [ai-capex-roi, ai-depreciation, ad-market-cycle]
+
+  - id: autos
+    name: "Autos and mobility"
+    core: true
+    order: 2
+    subsectors: ["OEMs", "EVs", "Suppliers", "Leasing"]
+    proxies:
+      - {ticker: CARZ, name: "Global autos ETF", verify: true}
+      - {ticker: EXV5.DE, name: "STOXX Europe 600 Automobiles & Parts", verify: true}
+    watchlist: [TSLA, "1211.HK", "7203.T", VOW3.DE, BMW.DE, MBG.DE, STLAM.MI, RNO.PA, CON.DE, AYV.PA, ALLY, CVNA]
+    keywords: [EV, registrations, residual values, tariffs, autonomy, price war]
+    debates: [eu-ev-adoption, china-ev-price-war, tesla-valuation, used-car-residuals]
+
+  - id: staples_retail
+    name: "UK/European consumer staples and retail"
+    core: true
+    order: 3
+    subsectors: ["Grocers", "Staples", "Discretionary retail"]
+    proxies:
+      - {ticker: EXH3.DE, name: "STOXX Europe 600 Food & Beverage", verify: true}
+      - {ticker: null, name: "STOXX Europe 600 Retail", verify: true}
+    watchlist: [TSCO.L, SBRY.L, MKS.L, OCDO.L, NXT.L, ABF.L, AD.AS, CA.PA, ULVR.L, NESN.SW, DGE.L, ITX.MC]
+    keywords: [market share, Kantar, discounters, private label, GLP-1, like-for-like]
+    debates: [glp1-staples, uk-grocery-price-war, discounter-share-gains]
+
+  - id: financials
+    name: "Financials"
+    core: true
+    order: 4
+    subsectors: ["Banks", "Credit", "Private credit"]
+    proxies:
+      - {ticker: KBE, name: "US banks"}
+      - {ticker: KRE, name: "US regional banks"}
+      - {ticker: EXV1.DE, name: "STOXX Europe 600 Banks", verify: true}
+      - {ticker: HYG, name: "US high yield"}
+    watchlist: [JPM, GS, MS, BAC, HSBA.L, BARC.L, LLOY.L, NWG.L, BNP.PA, SAN.MC, UBSG.SW, DBK.DE, APO, BX, KKR, ARES, OWL]
+    keywords: [net interest margin, credit losses, private credit, defaults, BDC, spreads]
+    debates: [private-credit-defaults, bank-nim-path, boe-cut-path]
+
+  # Watched for "Elsewhere" only (core: false). Promote any of these by
+  # setting core: true and adding watchlist/keywords/debates.
+  - {id: energy, name: "Energy", core: false, proxies: [{ticker: XLE}, {ticker: EXH1.DE, verify: true}]}
+  - {id: healthcare, name: "Healthcare", core: false, proxies: [{ticker: XLV}, {ticker: EXV4.DE, verify: true}]}
+  - {id: industrials, name: "Industrials and defence", core: false, proxies: [{ticker: XLI}, {ticker: ITA}]}
+  - {id: materials, name: "Materials and mining", core: false, proxies: [{ticker: XLB}, {ticker: EXV6.DE, verify: true}]}
+  - {id: utilities, name: "Utilities", core: false, proxies: [{ticker: XLU}]}
+  - {id: real_estate, name: "Real estate", core: false, proxies: [{ticker: XLRE}]}
+
+# ── Live debates ─────────────────────────────────────────────────────
+# Claims are tagged against these keys. New keys proposed by the model are
+# held for approval in Notion before they count.
+debates:
+  ai-capex-roi: "Will AI revenue justify hyperscaler and neocloud capex?"
+  ai-depreciation: "Are GPU and server useful lives overstated?"
+  ad-market-cycle: "Is digital ad growth peaking?"
+  eu-ev-adoption: "Will European EV adoption hit targets without subsidies?"
+  china-ev-price-war: "Does the China EV price war end in consolidation or exports?"
+  tesla-valuation: "Autonomy and robotics optionality vs auto fundamentals"
+  used-car-residuals: "Are used-car prices and lease residuals rolling over?"
+  glp1-staples: "Do GLP-1 drugs permanently cut volumes for snacks and drinks?"
+  uk-grocery-price-war: "Is a UK grocery price war starting?"
+  discounter-share-gains: "Do Aldi and Lidl keep taking share?"
+  private-credit-defaults: "Are private credit losses being hidden by marks and PIK?"
+  bank-nim-path: "Have bank net interest margins peaked?"
+  boe-cut-path: "How fast does the BoE cut?"
+
+# ── People (priority voices and the wider pool) ─────────────────────
+# Each person can have several channels. Every channel feeds the same person.
+people:
+  - name: "Michael Burry"
+    sectors: [tmt, macro]
+    lean: bear
+    contrarian: true
+    priority: true
+    why: "Argues hyperscalers overstate profits through long server lives"
+    channels:
+      - {type: substack, url: "https://michaeljburry.substack.com/feed", paid_via_email: true}
+
+  - name: "Scott Rubner"
+    org: "Citadel Securities"
+    sectors: [macro]
+    lean: mixed
+    priority: true
+    why: "Flows and positioning: who is crowded"
+    channels:
+      - {type: web_index, url: "https://www.citadelsecurities.com/news-and-insights/", series: "Global Market Intelligence"}
+
+  - name: "Frank Flight"
+    org: "Citadel Securities"
+    sectors: [macro]
+    lean: mixed
+    why: "Cross-asset macro and rates"
+    channels:
+      - {type: web_index, url: "https://www.citadelsecurities.com/news-and-insights/", series: "Global Macro Strategy"}
+
+  - name: "Torsten Slok"
+    org: "Apollo"
+    sectors: [macro, financials]
+    lean: bull
+    interested: true
+    priority: true
+    why: "Daily macro chart; the bull side of private credit"
+    channels:
+      - {type: email, sender_contains: "apollo", find: "Subscribe to The Daily Spark on Apollo Academy"}
+
+  - name: "Michael Cembalest"
+    org: "J.P. Morgan"
+    sectors: [macro]
+    lean: mixed
+    priority: true
+    channels:
+      - {type: web_index, url: null, find: "J.P. Morgan Eye on the Market page"}
+
+  - name: "Jeremy Grantham"
+    org: "GMO"
+    sectors: [macro]
+    lean: bear
+    contrarian: true
+    priority: true
+    channels:
+      - {type: web_index, url: null, find: "GMO research library"}
+
+  - name: "Marc Rubinstein"
+    sectors: [financials]
+    lean: mixed
+    priority: true
+    channels:
+      - {type: rss, url: null, find: "Net Interest Substack feed"}
+
+  - name: "Steve Dresser"
+    org: "Grocery Insight"
+    sectors: [staples_retail]
+    lean: mixed
+    contrarian: true
+    priority: true
+    why: "Store walks that test what grocers claim"
+    channels:
+      - {type: email, find: "Sign up at https://read.groceryinsight.com"}
+      - {type: rss, url: "https://www.groceryinsight.com/feed", verify: true}
+
+  - name: "Adam Jonas"
+    org: "Morgan Stanley"
+    sectors: [autos]
+    lean: bull
+    priority: true
+    channels:
+      - {type: podcast_mentions, show: "Thoughts on the Market"}
+
+  - name: "Ed Zitron"
+    sectors: [tmt]
+    lean: bear
+    contrarian: true
+    priority: true
+    channels:
+      - {type: rss, url: null, find: "Where's Your Ed At feed"}
+
+  - name: "Chris Whalen"
+    sectors: [financials]
+    lean: bear
+    contrarian: true
+    priority: true
+    channels:
+      - {type: rss, url: null, find: "The Institutional Risk Analyst feed"}
+
+  # Wider pool (not priority)
+  - {name: "Dylan Patel", org: "SemiAnalysis", sectors: [tmt], lean: bull,
+     channels: [{type: substack, url: "https://newsletter.semianalysis.com/feed", note: "teasers only"}]}
+  - {name: "Doug O'Laughlin", org: "Fabricated Knowledge", sectors: [tmt], lean: bull,
+     channels: [{type: substack, url: "https://www.fabricatedknowledge.com/feed"}]}
+  - {name: "Vikram Sekar", org: "Vik's Newsletter", sectors: [tmt], lean: mixed,
+     channels: [{type: substack, url: "https://www.viksnewsletter.com/feed"}]}
+  - {name: "Kevin Xu", org: "Interconnected", sectors: [tmt], lean: mixed,
+     channels: [{type: substack, url: "https://interconnect.substack.com/feed"}]}
+  - {name: "Benedict Evans", sectors: [tmt], lean: mixed,
+     channels: [{type: email, find: "Benedict Evans weekly newsletter"}]}
+  - {name: "Gary Marcus", sectors: [tmt], lean: bear, contrarian: true,
+     channels: [{type: rss, url: null, find: "Marcus on AI Substack feed"}]}
+  - {name: "David Cahn", org: "Sequoia", sectors: [tmt], lean: bear, contrarian: true,
+     channels: [{type: web_index, url: null, find: "Sequoia articles by David Cahn"}]}
+  - {name: "Eric Seufert", org: "Mobile Dev Memo", sectors: [tmt], lean: mixed,
+     channels: [{type: rss, url: null, find: "Mobile Dev Memo feed"}]}
+  - {name: "Brian Wieser", org: "Madison and Wall", sectors: [tmt], lean: mixed,
+     channels: [{type: rss, url: null, find: "Madison and Wall feed"}]}
+  - {name: "Doug Shapiro", org: "The Mediator", sectors: [tmt], lean: mixed,
+     channels: [{type: rss, url: null, find: "The Mediator Substack feed"}]}
+  - {name: "Jim Chanos", sectors: [tmt, financials], lean: bear, contrarian: true,
+     channels: [{type: podcast_mentions}, {type: press_mentions}]}
+  - {name: "Gordon Johnson", org: "GLJ Research", sectors: [autos], lean: bear, contrarian: true,
+     channels: [{type: press_mentions}]}
+  - {name: "Michael Dunne", sectors: [autos], lean: mixed,
+     channels: [{type: rss, url: null, find: "Michael Dunne newsletter feed"}]}
+  - {name: "Clive Black", org: "Shore Capital", sectors: [staples_retail], lean: mixed,
+     channels: [{type: press_mentions}]}
+  - {name: "Richard Hyman", sectors: [staples_retail], lean: mixed,
+     channels: [{type: rss, url: null, find: "Richard Hyman retail blog"}]}
+  - {name: "Terry Smith", org: "Fundsmith", sectors: [staples_retail], lean: bull,
+     channels: [{type: web_index, url: null, find: "Fundsmith annual letter"}]}
+  - {name: "Nick Train", org: "Lindsell Train", sectors: [staples_retail], lean: bull,
+     channels: [{type: web_index, url: null, find: "Lindsell Train monthly fund commentary"}]}
+  - {name: "Matt Levine", org: "Bloomberg", sectors: [financials], lean: mixed,
+     channels: [{type: email, find: "Money Stuff newsletter sign-up"}]}
+  - {name: "Dan Davies", sectors: [financials], lean: mixed,
+     channels: [{type: rss, url: null, find: "Back of Mind Substack feed"}]}
+  - {name: "Dan Rasmussen", org: "Verdad", sectors: [financials], lean: bear, contrarian: true,
+     channels: [{type: email, find: "Verdad weekly research"}]}
+  - {name: "Cliff Asness", org: "AQR", sectors: [financials, macro], lean: bear, contrarian: true,
+     channels: [{type: web_index, url: null, find: "AQR Cliff's Perspectives"}]}
+  - {name: "Howard Marks", org: "Oaktree", sectors: [macro, financials], lean: mixed,
+     channels: [{type: web_index, url: null, find: "Oaktree memos"}]}
+  - {name: "John Hussman", org: "Hussman Funds", sectors: [macro], lean: bear, contrarian: true,
+     note: "Right in 2000 and 2008, wrong through the 2010s: read as a stress test",
+     channels: [{type: web_index, url: null, find: "Hussman monthly market comment"}]}
+  - {name: "Michael Pettis", sectors: [macro], lean: bear, contrarian: true,
+     channels: [{type: rss, url: null, find: "Michael Pettis China Financial Markets"}]}
+  - {name: "Brad Setser", org: "CFR", sectors: [macro], lean: mixed,
+     channels: [{type: rss, url: null, find: "CFR Follow the Money blog feed"}]}
+
+# ── Institutional and data feeds (not tied to one person) ────────────
+feeds:
+  research:
+    - {name: "Goldman Sachs Top of Mind", type: web_index, url: null, find: "goldmansachs.com insights Top of Mind"}
+    - {name: "BlackRock Investment Institute weekly", type: web_index, url: null, tag: consensus_marker}
+    - {name: "Bank Underground (BoE staff)", type: rss, url: null}
+    - {name: "Liberty Street Economics (NY Fed)", type: rss, url: null}
+    - {name: "BIS Quarterly Review", type: web_index, url: null}
+  central_banks:
+    - {name: "Federal Reserve press releases and speeches", type: rss, url: null}
+    - {name: "ECB press releases and speeches", type: rss, url: null}
+    - {name: "Bank of England news and speeches", type: rss, url: null}
+    - {name: "Bank of Japan", type: rss, url: null}
+  sector_data:
+    - {name: "SMMT registrations", sector: autos, type: web_index, url: null}
+    - {name: "ACEA registrations", sector: autos, type: web_index, url: null}
+    - {name: "Rho Motion EV sales", sector: autos, type: web_index, url: null}
+    - {name: "CnEVPost", sector: autos, type: rss, url: null}
+    - {name: "Manheim Used Vehicle Value Index", sector: autos, type: web_index, url: null}
+    - {name: "Kantar/Worldpanel grocery share", sector: staples_retail, type: web_index, url: null}
+    - {name: "BRC-KPMG Retail Sales Monitor", sector: staples_retail, type: web_index, url: null}
+    - {name: "Fed H.8 bank data", sector: financials, type: api, source: fred}
+  headlines:
+    - {name: "FT", type: rss, url: null, note: "headline + link only"}
+    - {name: "CNBC markets", type: rss, url: null}
+    - {name: "MarketWatch", type: rss, url: null}
+    - {name: "Nikkei Asia", type: rss, url: null}
+    - {name: "SCMP business", type: rss, url: null}
+    - {name: "Electrek", sector: autos, type: rss, url: null}
+    - {name: "InsideEVs", sector: autos, type: rss, url: null}
+    - {name: "The Grocer", sector: staples_retail, type: rss, url: null}
+    - {name: "Retail Gazette", sector: staples_retail, type: rss, url: null}
+    - {name: "Banking Dive", sector: financials, type: rss, url: null}
+    - {name: "Google News per watch-list name", type: google_news_rss, from_watchlists: true}
+  earnings:
+    - {name: Finnhub, type: api, key_env: FINNHUB_API_KEY, coverage: US}
+    - {name: "SEC EDGAR 8-K", type: rss, coverage: US, user_agent_required: true}
+    - {name: "ROIC.ai", type: api, key_env: ROIC_API_KEY, coverage: global, note: "free plan: latest 2 calls per company, 5 requests/min"}
+    - {name: "Alpha Vantage", type: api, key_env: ALPHAVANTAGE_API_KEY, note: "earnings call transcripts; free 25 calls/day"}
+  substacks:       # Free subscriptions on Thilak's Substack account. Feed = <url>/feed
+    - {name: "SemiAnalysis", url: "https://newsletter.semianalysis.com", sectors: [tmt]}
+    - {name: "More Than Moore", url: "https://morethanmoore.substack.com", sectors: [tmt]}
+    - {name: "Rebound Capital", url: "https://reboundcapital.substack.com", sectors: [tmt], ideas: true}
+    - {name: "Musings on Markets", url: "https://aswathdamodaran.substack.com", sectors: [macro, tmt]}
+    - {name: "Prof G Media", url: "https://www.profgmedia.com", sectors: [macro, tmt]}
+    - {name: "Simply Put by Ed Elson", url: "https://edwardelson.substack.com", sectors: [macro, tmt]}
+    - {name: "Quant Enthusiasts", url: "https://youngandcalculated.substack.com", sectors: [macro]}
+    - {name: "Market Sentiment", url: "https://www.marketsentiment.co", sectors: [tmt], ideas: true}
+    - {name: "Citrini Research", url: "https://www.citriniresearch.com", sectors: [macro], ideas: true}
+    - {name: "The Bear Cave", url: "https://thebearcave.substack.com", sectors: [elsewhere], ideas: true, contrarian: true}
+    - {name: "Best Anchor Stocks", url: "https://www.bestanchorstocks.com", ideas: true}
+    - {name: "Heavy Moat Investments", url: "https://heavymoatinvestments.substack.com", ideas: true}
+    - {name: "Groundbreaker", url: "https://www.groundbrkr.com", ideas: true}
+    - {name: "Investment Talk", url: "https://www.investmenttalk.co", ideas: true}
+    - {name: "Under-Followed-Stocks", url: null, ideas: true, verify: true}
+    - {name: "$1M to $100M Portfolio Project", url: null, ideas: true, verify: true}
+    - {name: "Capital Curiosity", url: null, ideas: true, verify: true}
+    - {name: "First Principles Second Order", url: null, ideas: true, verify: true}
+    - {name: "Fundamentally Sound", url: null, ideas: true, verify: true}
+    # Followed in the Substack reader but not subscribed; add by setting active: true
+    - {name: "The Fiercely Independent Investor (Charlie Huggins)", url: "https://charliehuggins.substack.com", sectors: [staples_retail], active: false}
+    - {name: "maaizkhan", url: "https://maaizkhan.substack.com", sectors: [macro], active: false}
+    - {name: "michaelburnett3", url: "https://michaelburnett3.substack.com", sectors: [tmt], active: false}
+    - {name: "tenichols94", url: "https://tenichols94.substack.com", sectors: [macro], active: false}
+    # Ignored at Thilak's request: adi, bookbear express, footnotes, illuminate, josh, Not's Substack
+
+substack_discovery:
+  run: weekly                      # Sunday night; results in Friday's page too
+  methods:
+    recommendations: true          # each subscription's public "recommends" list
+    citations: true                # links inside posts already received
+    topic_search: true             # recent posts on watch-list names and live debates
+  max_requests_per_week: 400
+  candidates_per_week: 100
+  scoring_model: claude-haiku-5-5
+  score_on: [relevance, originality, against_consensus, free_full_text]
+  daily_new_voice_min_score: 0.8   # high-scoring free posts can enter the briefing as "new voice"
+  weekly_shortlist: 5              # Notion Discovery database: Track / Ignore
+  public_pages_only: true
+  short_sellers:   # public research pages; checked daily
+    - {name: "Muddy Waters", url: null}
+    - {name: "Spruce Point", url: null}
+    - {name: "Kerrisdale Capital", url: null}
+    - {name: "Culper Research", url: null}
+    - {name: "Wolfpack Research", url: null}
+    - {name: "Grizzly Research", url: null}
+    - {name: "Fuzzy Panda Research", url: null}
+    - {name: "Viceroy Research", url: null}
+  bluesky:         # profile RSS: https://bsky.app/profile/<handle>/rss
+    handles: []    # add handles for people on your list who post there
+
+# ── Podcasts ─────────────────────────────────────────────────────────
+# transcript: always = every run; on_demand = show notes, transcribe on request.
+# Feed URLs marked from_tldr come from your friend's sources.yaml.
+podcasts:
+  - {name: "Thoughts on the Market", url: "https://rss.art19.com/thoughts-on-the-market", transcript: always, scraper: thoughts_on_the_market, from_tldr: true}
+  - {name: "Exchanges", url: "https://feeds.megaphone.fm/GLD9218176758", transcript: always, scraper: exchanges, from_tldr: true}
+  - {name: "Odd Lots", url: "https://www.omnycontent.com/d/playlist/e73c998e-6e60-432f-8610-ae210140c5b1/8a94442e-5a74-4fa2-8b8d-ae27003a8d6b/982f5071-765c-403d-969d-ae27003a8d83/podcast.rss", transcript: always, from_tldr: true}
+  - {name: "Unhedged", url: "https://feeds.acast.com/public/shows/6478a825654260001190a7cb", transcript: always, from_tldr: true}
+  - {name: "Bloomberg Daybreak: Europe Edition", url: "https://www.omnycontent.com/d/playlist/e73c998e-6e60-432f-8610-ae210140c5b1/c1b39a51-1327-40f8-ae83-af80014e0b5c/8a433f03-1a96-430e-a3d0-af80014e0b7d/podcast.rss", transcript: always, from_tldr: true}
+  - {name: "Bloomberg Tech", url: "https://www.omnycontent.com/d/playlist/e73c998e-6e60-432f-8610-ae210140c5b1/41764a4f-fc64-4e11-89ba-ae7c0030ab5e/9caafc41-289c-4115-995d-ae7c0030ab75/podcast.rss", transcript: always, sector: tmt, from_tldr: true}
+  - {name: "Money Stuff: The Podcast", url: "https://www.omnycontent.com/d/playlist/e73c998e-6e60-432f-8610-ae210140c5b1/ee4336cb-155f-4488-90e0-b1400134e40e/77e6a3a7-290d-4a82-8164-b14001353ef2/podcast.rss", transcript: on_demand, sector: financials, from_tldr: true}
+  - {name: "FT News Briefing", url: "https://feeds.acast.com/public/shows/73fe3ede-5c5c-4850-96a8-30db8dbae8bf", transcript: on_demand, from_tldr: true}
+  - {name: "Behind the Money", url: "https://feeds.acast.com/public/shows/6a13c15d-181a-4a2e-a662-739d0e7f731a", transcript: on_demand, from_tldr: true}
+  - {name: "The Markets", url: "https://feeds.megaphone.fm/GLD9322922848", transcript: on_demand, from_tldr: true}
+  - {name: "Invest Like the Best", url: "https://feeds.megaphone.fm/CLS2859450455", transcript: on_demand, scraper: invest_like_the_best, from_tldr: true}
+  - {name: "Business Breakdowns", url: "https://feeds.megaphone.fm/breakdowns", transcript: on_demand, scraper: business_breakdowns, from_tldr: true}
+  - {name: "Dwarkesh Podcast", url: "https://apple.dwarkesh-podcast.workers.dev/feed.rss", transcript: on_demand, sector: tmt, from_tldr: true}
+  - {name: "Decoder with Nilay Patel", url: "https://feeds.megaphone.fm/recodedecode", transcript: on_demand, sector: tmt, from_tldr: true}
+  - {name: "In Good Company with Nicolai Tangen", url: "https://feeds.acast.com/public/shows/622618c7057f3400120d15db", transcript: on_demand, from_tldr: true}
+  - {name: "BG2 (Gerstner and Gurley)", url: null, transcript: on_demand, sector: tmt}
+  - {name: "Merryn Talks Money", url: null, transcript: on_demand}
+  - {name: "Macro Musings", url: null, transcript: on_demand}
+  - {name: "Monetary Matters", url: null, transcript: on_demand}
+  - {name: "Capital Allocators", url: null, transcript: on_demand, sector: financials}
+
+# ── Email inbox (newsletters, incl. FT, Bloomberg, paid Substacks) ───
+# A dedicated mailbox; subscribe newsletters to it or forward them.
+# Messages from senders in `subscriber_senders` go to Groq only.
+email_inbox:
+  imap_host_env: IMAP_HOST
+  user_env: IMAP_USER
+  password_env: IMAP_APP_PASSWORD     # an app-specific password, never your main one
+  folder: INBOX
+  subscriber_senders: ["ft.com", "bloomberg", "substack.com"]
