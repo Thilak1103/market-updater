@@ -5,3 +5,6 @@ __pycache__/
 data/*.db
 data/*.db-*
 logs/
+.pytest_cache/
+data/out/
+data/settings_backup/

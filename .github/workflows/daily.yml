@@ -1,0 +1,66 @@
+# Fallback runner if you don't use the Oracle VM. Disabled by default: to switch it on,
+# add the secrets in Settings > Secrets and variables > Actions, then set the repository
+# variable RUN_ON_ACTIONS to "true". GitHub's scheduler can start runs late at busy times.
+name: daily briefing (fallback)
+on:
+  schedule:
+    # GitHub cron is UTC. Two entries cover GMT and BST; the guard step keeps the right one.
+    - cron: "5 4 * * 1-5"    # 04:05 UTC = 05:05 BST
+    - cron: "5 5 * * 1-5"    # 05:05 UTC = 05:05 GMT
+  workflow_dispatch:
+concurrency: {group: briefing, cancel-in-progress: false}
+jobs:
+  brief:
+    if: vars.RUN_ON_ACTIONS == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 110
+    env:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+      FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+      FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
+      ROIC_API_KEY: ${{ secrets.ROIC_API_KEY }}
+      ALPHAVANTAGE_API_KEY: ${{ secrets.ALPHAVANTAGE_API_KEY }}
+      NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      MU_DATA_DIR: ${{ github.workspace }}/data
+    steps:
+      - name: Only run at 05:xx London time
+        id: guard
+        run: |
+          h=$(TZ=Europe/London date +%H)
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] || [ "$h" = "05" ]; then echo "go=1" >> "$GITHUB_OUTPUT"; fi
+      - uses: actions/checkout@v4
+        if: steps.guard.outputs.go
+      - uses: actions/setup-python@v5
+        if: steps.guard.outputs.go
+        with: {python-version: "3.12", cache: pip}
+      - name: Restore database
+        if: steps.guard.outputs.go
+        uses: actions/cache/restore@v4
+        with:
+          path: data
+          key: mu-data-${{ github.run_id }}
+          restore-keys: mu-data-
+      - if: steps.guard.outputs.go
+        run: |
+          sudo apt-get install -y ffmpeg
+          pip install -r requirements.txt
+      - name: Collect
+        if: steps.guard.outputs.go
+        run: python -m market_updater collect --force
+      - name: Wait for the 06:10 snapshot
+        if: steps.guard.outputs.go && github.event_name == 'schedule'
+        run: |
+          now=$(date +%s); target=$(TZ=Europe/London date -d "06:10" +%s)
+          [ "$target" -gt "$now" ] && sleep $((target - now)) || true
+      - name: Write and publish
+        if: steps.guard.outputs.go
+        run: python -m market_updater run --force
+      - name: Save database
+        if: always() && steps.guard.outputs.go
+        uses: actions/cache/save@v4
+        with:
+          path: data
+          key: mu-data-${{ github.run_id }}

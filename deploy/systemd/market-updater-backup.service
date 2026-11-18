@@ -1,0 +1,14 @@
+[Unit]
+Description=Market Updater: back up settings
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/opt/market-updater
+EnvironmentFile=/opt/market-updater/.env
+Environment=MU_DATA_DIR=/opt/market-updater/data
+ExecStart=/opt/market-updater/.venv/bin/python -m market_updater export-settings
+TimeoutStartSec=5min
+Nice=5

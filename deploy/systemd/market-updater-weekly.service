@@ -1,0 +1,14 @@
+[Unit]
+Description=Market Updater: earnings dates, fundamentals, Substack discovery
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/opt/market-updater
+EnvironmentFile=/opt/market-updater/.env
+Environment=MU_DATA_DIR=/opt/market-updater/data
+ExecStart=/opt/market-updater/.venv/bin/python -m market_updater weekly
+TimeoutStartSec=120min
+Nice=5

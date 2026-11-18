@@ -1,0 +1,10 @@
+[Unit]
+Description=Market Updater: write and publish the briefing (schedule)
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 06:10:00 Europe/London
+Persistent=true
+Unit=market-updater-daily.service
+
+[Install]
+WantedBy=timers.target

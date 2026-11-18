@@ -1,0 +1,14 @@
+[Unit]
+Description=Market Updater: write and publish the briefing
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/opt/market-updater
+EnvironmentFile=/opt/market-updater/.env
+Environment=MU_DATA_DIR=/opt/market-updater/data
+ExecStart=/opt/market-updater/.venv/bin/python -m market_updater run
+TimeoutStartSec=40min
+Nice=5

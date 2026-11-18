@@ -1,0 +1,10 @@
+[Unit]
+Description=Market Updater: back up settings (schedule)
+
+[Timer]
+OnCalendar=*-*-* 23:30:00 Europe/London
+Persistent=true
+Unit=market-updater-backup.service
+
+[Install]
+WantedBy=timers.target

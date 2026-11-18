@@ -1,0 +1,10 @@
+[Unit]
+Description=Market Updater: collect and extract (schedule)
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 05:00:00 Europe/London
+Persistent=true
+Unit=market-updater-collect.service
+
+[Install]
+WantedBy=timers.target
