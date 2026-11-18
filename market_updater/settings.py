@@ -252,6 +252,24 @@ def parse_setting(kind: str, value: str) -> Any:
     raise ValueError(kind)
 
 
+def merge_sources(notion_sources: list[Source], yaml_sources: list[Source]) -> list[Source]:
+    """Notion is the live list; where a Notion row has no feed URL, use the YAML one.
+
+    Rows deleted in Notion stay deleted. Run `sync-sources` once to copy YAML URLs and any
+    YAML-only sources into Notion so the table shows everything.
+    """
+    by_name = {y.name.lower(): y for y in yaml_sources}
+    for src in notion_sources:
+        y = by_name.get(src.name.lower())
+        if y and not src.feed_url and y.feed_url:
+            src.feed_url = y.feed_url
+            if src.type in ("rss", "web_page", "press_mentions") and y.type != src.type:
+                src.type = y.type
+        elif y and not src.feed_url and y.type == "press_mentions":
+            src.type = "press_mentions"
+    return notion_sources
+
+
 def apply_notion(settings: Settings, notion: Any) -> Settings:
     """Override settings with the Notion databases. Any failure keeps the YAML values."""
     from .publish.notion_settings import read_debates, read_settings_rows, read_sectors, read_sources
@@ -268,7 +286,7 @@ def apply_notion(settings: Settings, notion: Any) -> Settings:
     if sectors:
         s.sectors = sectors
     if sources:
-        s.sources = sources
+        s.sources = merge_sources(sources, settings.sources)
     if debates:
         s.debates = debates
     for name, value in rows.items():

@@ -35,6 +35,9 @@ if [ ! -f .env ]; then
   exit 0
 fi
 
+echo "==> Copying feed URLs into the Notion Sources table"
+.venv/bin/python -m market_updater sync-sources || true
+
 echo "==> Checking sources once (takes a few minutes)"
 .venv/bin/python -m market_updater check-sources || true
 

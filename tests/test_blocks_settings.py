@@ -31,3 +31,12 @@ def test_seed_settings_are_coherent(settings):
     assert settings.sector_of_ticker("TSCO.L") == "staples_retail"
     for s in settings.sources:
         assert s.type, s.name
+
+
+def test_notion_rows_without_urls_fall_back_to_yaml(settings):
+    from market_updater.settings import Source, merge_sources
+    rows = [Source("Marc Rubinstein", "rss"), Source("Richard Hyman", "rss"), Source("New one", "rss")]
+    merged = {s.name: s for s in merge_sources(rows, settings.sources)}
+    assert merged["Marc Rubinstein"].feed_url == "https://www.netinterest.co/feed"
+    assert merged["Richard Hyman"].type == "press_mentions"
+    assert merged["New one"].feed_url is None and len(merged) == 3

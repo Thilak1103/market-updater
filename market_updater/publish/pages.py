@@ -118,3 +118,31 @@ def propose_debates(notion: N.Notion, keys: list[str], existing: set[str]) -> No
             continue
         notion.create_page("debates", {"Question": N.title(f"(proposed) {k}"), "Key": N.rich(k),
                                        "Active": N.checkbox(False)})
+
+
+TYPE_LABEL = {"substack": "Substack", "rss": "RSS", "email": "Email", "web_page": "Web page",
+              "podcast": "Podcast", "bluesky": "Bluesky", "press_mentions": "Press mentions", "api": "API"}
+
+
+def sync_sources(notion: N.Notion, yaml_sources: list) -> dict:
+    """One-off: fill empty Feed URLs in Notion from the YAML and add YAML-only sources (paused)."""
+    rows = {(N.prop(r, "Source") or "").lower(): r for r in notion.query("sources")}
+    filled, added = [], []
+    for s in yaml_sources:
+        row = rows.get(s.name.lower())
+        if row is None:
+            notion.create_page("sources", {
+                "Source": N.title(s.name), "Type": N.select(TYPE_LABEL.get(s.type, "RSS")),
+                "Feed URL": N.url(s.feed_url), "Active": N.checkbox(bool(s.active and s.feed_url)),
+                "Sectors": N.multi([SECTOR_LABELS.get(k, k) for k in s.sectors if k in SECTOR_LABELS]),
+                "Notes": N.rich((s.notes or "Added from config/briefing.yaml")[:1900]),
+            })
+            added.append(s.name)
+        elif not N.prop(row, "Feed URL") and s.feed_url:
+            notion.update_page(row["id"], {"Feed URL": N.url(s.feed_url),
+                                           "Type": N.select(TYPE_LABEL.get(s.type, "RSS"))})
+            filled.append(s.name)
+        elif not N.prop(row, "Feed URL") and s.type == "press_mentions":
+            notion.update_page(row["id"], {"Type": N.select("Press mentions")})
+            filled.append(s.name)
+    return {"filled": filled, "added": added}

@@ -9,6 +9,7 @@ Commands
   discover        Substack discovery only
   export-settings Back up the current settings (YAML merged with Notion) to data/settings_backup/
   check-sources   Try every feed once and print which work
+  sync-sources    Copy feed URLs from config/briefing.yaml into the Notion Sources table (once)
 """
 from __future__ import annotations
 
@@ -64,7 +65,7 @@ def main(argv: list[str] | None = None) -> int:
     load_dotenv()
     p = argparse.ArgumentParser(prog="market_updater")
     p.add_argument("command", choices=["collect", "run", "dry-run", "health", "weekly", "discover",
-                                       "export-settings", "check-sources"])
+                                       "export-settings", "check-sources", "sync-sources"])
     p.add_argument("--force", action="store_true", help="Run even at weekends")
     p.add_argument("--no-collect", action="store_true", help="Skip fetching sources (reuse the database)")
     a = p.parse_args(argv)
@@ -110,6 +111,17 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if a.command == "check-sources":
         return _check_sources()
+    if a.command == "sync-sources":
+        from .publish import notion as N
+        from .publish.pages import sync_sources
+        from .settings import load_yaml
+        notion = N.connect(load_yaml())
+        if notion is None:
+            print("NOTION_TOKEN is not set.")
+            return 1
+        out = sync_sources(notion, load_yaml().sources)
+        print(f"Filled {len(out['filled'])} feed URLs; added {len(out['added'])} sources.")
+        return 0
     return 2
 
 
