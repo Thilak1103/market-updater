@@ -63,6 +63,14 @@ jobs:
       - name: Write and publish
         if: steps.guard.outputs.go
         run: python -m market_updater run --force
+      - name: Keep today's briefing as a downloadable file (also when Notion fails)
+        if: always() && steps.guard.outputs.go
+        uses: actions/upload-artifact@v4
+        with:
+          name: briefing
+          path: data/out/
+          if-no-files-found: ignore
+          retention-days: 30
       - name: Save database
         if: always() && steps.guard.outputs.go
         uses: actions/cache/save@v4

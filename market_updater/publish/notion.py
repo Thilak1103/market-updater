@@ -167,4 +167,14 @@ def connect(settings) -> Notion | None:
     if not os.environ.get("NOTION_TOKEN"):
         log.info("NOTION_TOKEN not set: running without Notion")
         return None
-    return Notion(ids=ids_from_settings(settings))
+    client = Notion(ids=ids_from_settings(settings))
+    try:
+        client._req("POST", f"/data_sources/{client.ds('briefings')}/query", {"page_size": 1})
+    except Exception as e:
+        if "404" in str(e) or "object_not_found" in str(e):
+            log.error("Notion can't see the Market Updater databases. In Notion, open the Market "
+                      "Updater page, click ⋯ → Connections and add the integration this token "
+                      "belongs to. Running without Notion for now.")
+            return None
+        log.warning("Notion check failed (%s); will try anyway", e)
+    return client
