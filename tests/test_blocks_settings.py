@@ -40,3 +40,15 @@ def test_notion_rows_without_urls_fall_back_to_yaml(settings):
     assert merged["Marc Rubinstein"].feed_url == "https://www.netinterest.co/feed"
     assert merged["Richard Hyman"].type == "press_mentions"
     assert merged["New one"].feed_url is None and len(merged) == 3
+
+
+def test_clean_env_strips_pasted_line_breaks(monkeypatch):
+    import os
+    from market_updater.util import clean_env
+    monkeypatch.setenv("NOTION_TOKEN", "ntn_abc123\n")
+    monkeypatch.setenv("GROQ_API_KEY", "  gsk_x ")
+    monkeypatch.setenv("FRED_API_KEY", "fine")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "\n")
+    assert sorted(clean_env()) == ["GROQ_API_KEY", "NOTION_TOKEN", "TELEGRAM_CHAT_ID"]
+    assert os.environ["NOTION_TOKEN"] == "ntn_abc123" and os.environ["GROQ_API_KEY"] == "gsk_x"
+    assert "TELEGRAM_CHAT_ID" not in os.environ
