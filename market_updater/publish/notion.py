@@ -77,6 +77,22 @@ class Notion:
             self.append(page["id"], children[100:])
         return page
 
+    def page_text(self, page_id: str, max_blocks: int = 300) -> str:
+        """Plain text of a page's body (paragraphs, headings, lists, quotes)."""
+        parts, cursor = [], None
+        while len(parts) < max_blocks:
+            q = f"/blocks/{page_id}/children?page_size=100" + (f"&start_cursor={cursor}" if cursor else "")
+            data = self._req("GET", q)
+            for b in data.get("results", []):
+                body = b.get(b.get("type", ""), {})
+                text = "".join(t.get("plain_text", "") for t in body.get("rich_text", []))
+                if text.strip():
+                    parts.append(text)
+            if not data.get("has_more"):
+                break
+            cursor = data.get("next_cursor")
+        return "\n".join(parts)
+
     def append(self, block_id: str, children: list[dict]) -> None:
         for batch in chunks(children, 100):
             self._req("PATCH", f"/blocks/{block_id}/children", {"children": batch})

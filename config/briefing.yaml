@@ -238,6 +238,7 @@ people:
     why: "Argues hyperscalers overstate profits through long server lives"
     channels:
       - {type: substack, url: "https://michaeljburry.substack.com/feed", paid_via_email: true}
+      - {type: press_mentions}
 
   - name: "Scott Rubner"
     org: "Citadel Securities"
@@ -247,6 +248,7 @@ people:
     why: "Flows and positioning: who is crowded"
     channels:
       - {type: web_index, url: "https://www.citadelsecurities.com/news-and-insights/", series: "Global Market Intelligence"}
+      - {type: press_mentions}   # the Citadel site blocks automated reading; Bloomberg/Reuters quote them weekly
 
   - name: "Frank Flight"
     org: "Citadel Securities"
@@ -255,6 +257,7 @@ people:
     why: "Cross-asset macro and rates"
     channels:
       - {type: web_index, url: "https://www.citadelsecurities.com/news-and-insights/", series: "Global Macro Strategy"}
+      - {type: press_mentions}   # the Citadel site blocks automated reading; Bloomberg/Reuters quote them weekly
 
   - name: "Torsten Slok"
     org: "Apollo"

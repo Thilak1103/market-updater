@@ -44,6 +44,7 @@ class Source:
     active: bool = True
     notes: str = ""
     sender_contains: str | None = None   # for email sources
+    also_mentions: bool = False    # also pull news coverage quoting them (Google News)
 
     @property
     def fetchable(self) -> bool:
@@ -131,8 +132,10 @@ def _yaml_sources(raw: dict) -> list[Source]:
     out: list[Source] = []
     typemap = {"web_index": "web_page", "podcast_mentions": "press_mentions"}
     for p in raw.get("people", []):
-        ch = (p.get("channels") or [{}])[0]
+        chans = p.get("channels") or [{}]
+        ch = chans[0]
         t = typemap.get(ch.get("type", "rss"), ch.get("type", "rss"))
+        extra_mentions = any(typemap.get(c.get("type"), c.get("type")) == "press_mentions" for c in chans[1:])
         url = ch.get("url")
         if t == "substack" and url and not url.endswith("/feed"):
             url = url.rstrip("/") + "/feed"
@@ -141,7 +144,7 @@ def _yaml_sources(raw: dict) -> list[Source]:
             sectors=list(p.get("sectors", [])), priority=bool(p.get("priority")),
             lean=p.get("lean", "mixed"), contrarian=bool(p.get("contrarian")),
             interested=bool(p.get("interested")), notes=p.get("why", "") or p.get("note", ""),
-            sender_contains=ch.get("sender_contains"),
+            sender_contains=ch.get("sender_contains"), also_mentions=extra_mentions,
         ))
     feeds = raw.get("feeds", {})
     for s in feeds.get("substacks", []):
@@ -261,6 +264,8 @@ def merge_sources(notion_sources: list[Source], yaml_sources: list[Source]) -> l
     by_name = {y.name.lower(): y for y in yaml_sources}
     for src in notion_sources:
         y = by_name.get(src.name.lower())
+        if y and y.also_mentions:
+            src.also_mentions = True
         if y and not src.feed_url and y.feed_url:
             src.feed_url = y.feed_url
             if src.type in ("rss", "web_page", "press_mentions") and y.type != src.type:
