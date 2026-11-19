@@ -12,7 +12,7 @@ Trade ideas are ideas to research, not investment advice.
 
 ## Getting it running
 
-See [SETUP.md](SETUP.md): keys, Notion connection, the free Oracle server and the timers.
+See [SETUP.md](SETUP.md): keys, the Notion connection and turning on the daily GitHub Actions run.
 
 ## How a day runs
 

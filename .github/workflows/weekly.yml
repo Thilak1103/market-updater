@@ -1,0 +1,45 @@
+# Sunday maintenance: earnings dates, fundamentals refresh, Substack discovery, settings backup.
+name: weekly maintenance
+on:
+  schedule:
+    - cron: "0 18 * * 0"     # Sunday 18:00 UTC
+  workflow_dispatch:
+concurrency: {group: briefing, cancel-in-progress: false}
+jobs:
+  weekly:
+    if: vars.PAUSE_BRIEFING != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    env:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+      FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
+      ROIC_API_KEY: ${{ secrets.ROIC_API_KEY }}
+      ALPHAVANTAGE_API_KEY: ${{ secrets.ALPHAVANTAGE_API_KEY }}
+      NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      MU_DATA_DIR: ${{ github.workspace }}/data
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12", cache: pip}
+      - uses: actions/cache/restore@v4
+        with:
+          path: data
+          key: mu-data-${{ github.run_id }}
+          restore-keys: mu-data-
+      - run: pip install -r requirements.txt
+      - run: python -m market_updater weekly
+      - name: Keep the settings backup as a downloadable artifact (90 days)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: settings-backup
+          path: data/settings_backup/
+          if-no-files-found: ignore
+      - if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: data
+          key: mu-data-${{ github.run_id }}

@@ -1,0 +1,31 @@
+# 07:00 London check: sends a Telegram alert if today's page isn't in Notion.
+name: health check
+on:
+  schedule:
+    - cron: "0 6 * * 1-5"    # 07:00 BST
+    - cron: "0 7 * * 1-5"    # 07:00 GMT
+jobs:
+  health:
+    if: vars.PAUSE_BRIEFING != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+    steps:
+      - name: Only the entry that is 07:00 in London
+        id: guard
+        run: |
+          off=$(TZ=Europe/London date +%z)
+          if { [ "$off" = "+0100" ] && [ "${{ github.event.schedule }}" = "0 6 * * 1-5" ]; } \
+             || { [ "$off" = "+0000" ] && [ "${{ github.event.schedule }}" = "0 7 * * 1-5" ]; }; then
+            echo "go=1" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@v4
+        if: steps.guard.outputs.go
+      - uses: actions/setup-python@v5
+        if: steps.guard.outputs.go
+        with: {python-version: "3.12", cache: pip}
+      - if: steps.guard.outputs.go
+        run: pip install -r requirements.txt && python -m market_updater health
