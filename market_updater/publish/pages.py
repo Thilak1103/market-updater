@@ -34,8 +34,11 @@ def publish_briefing(notion: N.Notion, day: date, title: str, markdown: str, *, 
 def push_views(notion: N.Notion, db: DB) -> int:
     rows = db.q("SELECT v.*, c.claim, c.via, c.sector, i.source_name FROM views v JOIN claims c ON c.id=v.claim_id "
                 "JOIN items i ON i.id=c.item_id WHERE v.pushed=0 LIMIT 300")
-    n = 0
+    n, fails = 0, 0
     for r in rows:
+        if fails >= 3:
+            log.warning("Stopped pushing views after 3 failures; they'll be retried next run")
+            break
         try:
             notion.create_page("views", {
                 "View": N.title(truncate(r["claim"], 200)), "Person": N.rich(r["speaker"]),
@@ -48,7 +51,9 @@ def push_views(notion: N.Notion, db: DB) -> int:
             })
             db.ex("UPDATE views SET pushed=1 WHERE id=?", (r["id"],))
             n += 1
+            fails = 0
         except Exception as e:
+            fails += 1
             log.warning("Could not push view %s: %s", r["id"], e)
     return n
 

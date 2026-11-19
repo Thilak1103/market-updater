@@ -101,7 +101,8 @@ def clean_env() -> list[str]:
 def setup_logging() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s",
                         datefmt="%H:%M:%S")
-    for noisy in ("httpx", "httpcore", "anthropic", "yfinance", "urllib3", "peewee"):
+    for noisy in ("httpx", "httpcore", "anthropic", "yfinance", "urllib3", "peewee", "trafilatura",
+                  "trafilatura.core", "trafilatura.htmlprocessing", "htmldate", "courlan"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
 

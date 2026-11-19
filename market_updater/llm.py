@@ -102,15 +102,24 @@ class LLM:
     # -- Claude ----------------------------------------------------------------
     def _claude_json(self, model, purpose, system, user, schema, max_tokens) -> dict:
         tool = {"name": "submit", "description": "Submit the structured result.", "input_schema": schema}
-        resp = self._anthropic.messages.create(
-            model=model, max_tokens=max_tokens, system=system,
-            messages=[{"role": "user", "content": user}],
-            tools=[tool], tool_choice={"type": "tool", "name": "submit"},
-        )
+        kwargs = dict(model=model, max_tokens=max_tokens, system=system,
+                      messages=[{"role": "user", "content": user}], tools=[tool])
+        try:
+            resp = self._anthropic.messages.create(**kwargs, tool_choice={"type": "tool", "name": "submit"})
+        except Exception as e:
+            # Some models (e.g. Opus with extended thinking on by default) refuse a forced tool.
+            if "tool_choice" not in str(e):
+                raise
+            kwargs["system"] = system + "\n\nRespond only by calling the `submit` tool once."
+            resp = self._anthropic.messages.create(**kwargs, tool_choice={"type": "auto"})
         self._log_claude(model, resp, purpose)
         for block in resp.content:
             if getattr(block, "type", "") == "tool_use":
                 return dict(block.input)
+        text = "".join(getattr(b, "text", "") for b in resp.content)
+        start, end = text.find("{"), text.rfind("}")
+        if start != -1 and end > start:
+            return json.loads(text[start:end + 1])
         raise ValueError("Claude returned no tool call")
 
     def _claude_text(self, model, purpose, system, user, max_tokens) -> str:
