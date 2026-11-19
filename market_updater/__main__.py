@@ -62,7 +62,14 @@ def load_dotenv(path: str = ".env") -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    from .util import clean_env, setup_logging
+
+    setup_logging()
     load_dotenv()
+    fixed = clean_env()
+    if fixed:
+        log.warning("Removed stray spaces or line breaks from: %s. Worth re-saving these secrets.",
+                    ", ".join(fixed))
     p = argparse.ArgumentParser(prog="market_updater")
     p.add_argument("command", choices=["collect", "run", "dry-run", "health", "weekly", "discover",
                                        "export-settings", "check-sources", "sync-sources"])

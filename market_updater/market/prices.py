@@ -5,6 +5,7 @@ Numbers in the briefing come only from here (never from the language model).
 from __future__ import annotations
 
 import io
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -67,7 +68,7 @@ def stooq_symbol(ticker: str) -> str | None:
 
 
 def stooq_last_close(symbol: str) -> tuple[str, float] | None:
-    r = get_with_retry("https://stooq.com/q/d/l/", params={"s": symbol, "i": "d"}, tries=2)
+    r = get_with_retry("https://stooq.com/q/d/l/", params={"s": symbol, "i": "d"}, tries=1)
     if r.status_code != 200 or "Date" not in r.text[:50]:
         return None
     df = pd.read_csv(io.StringIO(r.text))
@@ -87,6 +88,10 @@ class Prices:
         self.cross_check = cross_check
         self.disagreement_pct = disagreement_pct
         self._frame: pd.DataFrame | None = None
+        # The cross-check is a nicety: cap it so a slow Stooq can't stall the run.
+        self._checks: dict[str, bool | None] = {}
+        self._check_failures = 0
+        self._check_budget_s = 90.0
 
     def load(self, tickers: list[str], period: str = "2y") -> pd.DataFrame:
         tickers = sorted(set(t for t in tickers if t))
@@ -115,15 +120,31 @@ class Prices:
             return None
         q = Quote(ticker, float(s.iloc[-1]), float(s.iloc[-2]), s.index[-1].date().isoformat())
         if self.cross_check:
-            sym = stooq_symbol(ticker)
-            if sym:
-                try:
-                    got = stooq_last_close(sym)
-                    if got and got[0] == q.asof:
-                        q.cross_checked = abs(got[1] / q.last - 1) * 100 <= self.disagreement_pct
-                except Exception as e:
-                    log.debug("Stooq check failed for %s: %s", ticker, e)
+            q.cross_checked = self._cross_check(ticker, q)
         return q
+
+    def _cross_check(self, ticker: str, q: "Quote") -> bool | None:
+        if ticker in self._checks:
+            return self._checks[ticker]
+        sym = stooq_symbol(ticker)
+        if not sym or self._check_failures >= 3 or self._check_budget_s <= 0:
+            return None
+        t0 = time.monotonic()
+        result = None
+        try:
+            got = stooq_last_close(sym)
+            if got and got[0] == q.asof:
+                result = abs(got[1] / q.last - 1) * 100 <= self.disagreement_pct
+            elif not got:
+                self._check_failures += 1
+        except Exception as e:
+            self._check_failures += 1
+            log.debug("Stooq check failed for %s: %s", ticker, e)
+        self._check_budget_s -= time.monotonic() - t0
+        if self._check_failures == 3:
+            log.warning("Stooq cross-check switched off for this run after 3 failures")
+        self._checks[ticker] = result
+        return result
 
     def returns(self, ticker: str, days: int) -> float | None:
         df = self.frame

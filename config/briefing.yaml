@@ -458,11 +458,11 @@ substack_discovery:
   weekly_shortlist: 5              # Notion Discovery database: Track / Ignore
   public_pages_only: true
   short_sellers:   # public research pages; checked daily
-    - {name: "Muddy Waters", url: "https://www.muddywatersresearch.com/research/"}   # unverified
+    - {name: "Muddy Waters", url: "https://muddywatersresearch.com/research/"}   # unverified
     - {name: "Spruce Point", url: "https://www.sprucepointcap.com/research"}   # unverified
     - {name: "Kerrisdale Capital", url: "https://www.kerrisdalecap.com/blog/"}   # unverified
     - {name: "Culper Research", url: "https://culperresearch.com/"}   # unverified
-    - {name: "Wolfpack Research", url: "https://wolfpackresearch.com/research/"}   # unverified
+    - {name: "Wolfpack Research", url: "https://wolfpackresearch.com/"}   # unverified
     - {name: "Grizzly Research", url: "https://grizzlyreports.com/"}   # unverified
     - {name: "Fuzzy Panda Research", url: "https://fuzzypandaresearch.com/"}   # unverified
     - {name: "Viceroy Research", url: "https://viceroyresearch.org/"}   # unverified

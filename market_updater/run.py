@@ -5,6 +5,7 @@ Every step is wrapped so one failure degrades the page instead of killing the ru
 from __future__ import annotations
 
 import json
+import time
 import traceback
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
@@ -40,8 +41,12 @@ class RunResult:
 
 
 def _step(name: str, problems: list[str], fn, *a, default=None, **kw):
+    t0 = time.monotonic()
     try:
-        return fn(*a, **kw)
+        out = fn(*a, **kw)
+        if time.monotonic() - t0 > 20:
+            log.info("Step %s took %.0fs", name, time.monotonic() - t0)
+        return out
     except Exception as e:
         log.error("Step %s failed: %s\n%s", name, e, traceback.format_exc(limit=3))
         problems.append(f"{name}: {e}")
@@ -99,7 +104,9 @@ def daily(*, dry_run: bool = False, settings: Settings | None = None, db: DB | N
     reports = [r for r in reports if E.reviewable(r, prices.frame)]
     surprises = [(r.ticker, r.eps_surprise_pct) for r in reports if r.eps_surprise_pct is not None]
     asof = now.astimezone(now_london().tzinfo).strftime("%H:%M London time")
+    t0 = time.monotonic()
     snap = SN.build(settings, prices, macro, db, day, asof, surprises)
+    log.info("Snapshot built in %.0fs", time.monotonic() - t0)
 
     claims = [X.claim_dict(c) for c in db.claims_since(since)]
     claims_by_id = {c["id"]: c for c in claims}

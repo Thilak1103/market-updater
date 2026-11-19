@@ -70,6 +70,41 @@ def get_with_retry(url: str, *, params: dict | None = None, headers: dict | None
     raise RuntimeError(f"GET failed after {tries} tries: {url}: {last}")
 
 
+KEY_NAMES = ("ANTHROPIC_API_KEY", "GROQ_API_KEY", "FRED_API_KEY", "FINNHUB_API_KEY", "ROIC_API_KEY",
+             "ALPHAVANTAGE_API_KEY", "NOTION_TOKEN", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID",
+             "IMAP_HOST", "IMAP_USER", "IMAP_APP_PASSWORD")
+
+
+def clean_env() -> list[str]:
+    """Strip stray spaces and line breaks that sneak in when keys are pasted.
+
+    A trailing line break makes every API call fail with "Illegal header value".
+    Returns the names that were changed (never the values).
+    """
+    import os
+
+    fixed = []
+    for k in KEY_NAMES:
+        v = os.environ.get(k)
+        if v is None:
+            continue
+        clean = v.strip()
+        if clean != v:
+            fixed.append(k)
+        if clean:
+            os.environ[k] = clean
+        else:
+            os.environ.pop(k, None)
+    return fixed
+
+
+def setup_logging() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s",
+                        datefmt="%H:%M:%S")
+    for noisy in ("httpx", "httpcore", "anthropic", "yfinance", "urllib3", "peewee"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
+
+
 _ws = re.compile(r"\s+")
 
 
