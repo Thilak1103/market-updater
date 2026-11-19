@@ -1,7 +1,7 @@
-# Fallback runner if you don't use the Oracle VM. Disabled by default: to switch it on,
-# add the secrets in Settings > Secrets and variables > Actions, then set the repository
-# variable RUN_ON_ACTIONS to "true". GitHub's scheduler can start runs late at busy times.
-name: daily briefing (fallback)
+# The daily briefing, run on GitHub's machines (free on a public repo).
+# Keys live in Settings > Secrets and variables > Actions. To pause it, set the repository
+# variable PAUSE_BRIEFING to "true". GitHub's scheduler can start runs late at busy times.
+name: daily briefing
 on:
   schedule:
     # GitHub cron is UTC. Two entries cover GMT and BST; the guard step keeps the right one.
@@ -11,7 +11,7 @@ on:
 concurrency: {group: briefing, cancel-in-progress: false}
 jobs:
   brief:
-    if: vars.RUN_ON_ACTIONS == 'true'
+    if: vars.PAUSE_BRIEFING != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 110
     env:
@@ -26,11 +26,16 @@ jobs:
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
       MU_DATA_DIR: ${{ github.workspace }}/data
     steps:
-      - name: Only run at 05:xx London time
+      - name: Pick the cron entry that matches London time (GMT or BST)
         id: guard
         run: |
-          h=$(TZ=Europe/London date +%H)
-          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] || [ "$h" = "05" ]; then echo "go=1" >> "$GITHUB_OUTPUT"; fi
+          off=$(TZ=Europe/London date +%z)
+          echo "London offset $off, schedule '${{ github.event.schedule }}'"
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] \
+             || { [ "$off" = "+0100" ] && [ "${{ github.event.schedule }}" = "5 4 * * 1-5" ]; } \
+             || { [ "$off" = "+0000" ] && [ "${{ github.event.schedule }}" = "5 5 * * 1-5" ]; }; then
+            echo "go=1" >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/checkout@v4
         if: steps.guard.outputs.go
       - uses: actions/setup-python@v5
@@ -54,7 +59,7 @@ jobs:
         if: steps.guard.outputs.go && github.event_name == 'schedule'
         run: |
           now=$(date +%s); target=$(TZ=Europe/London date -d "06:10" +%s)
-          [ "$target" -gt "$now" ] && sleep $((target - now)) || true
+          if [ "$target" -gt "$now" ]; then sleep $((target - now)); fi
       - name: Write and publish
         if: steps.guard.outputs.go
         run: python -m market_updater run --force
