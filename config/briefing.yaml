@@ -20,15 +20,25 @@ schedule:
   collect_at: "05:00"
   market_snapshot_at: "06:15"
   publish_by: "06:45"
-  health_check_at: "06:55"
+  health_check_at: "07:00"
   friday_deep_dive: true
 
 delivery:
-  notion:
-    briefings_database: "Daily Briefings"
-    views_database: "Views"
-    inbox_database: "Inbox"
   telegram_alerts: failures_only
+
+notion:
+  # Data source IDs of the databases under the "Market Updater" Notion page.
+  # The server's Notion integration must be connected to that page.
+  data_sources:
+    briefings: 41c25b17-0278-8105-9471-000b2be4d9ce
+    views: 41c25b17-0278-8158-9eda-000b7615c523
+    ideas: 41c25b17-0278-816a-adf8-000b20264ea2
+    inbox: 41c25b17-0278-8114-8ce8-000be0627751
+    discovery: 41c25b17-0278-810e-8d56-000ba874dd62
+    sectors: 41c25b17-0278-81dd-93c4-000bf16032d4
+    sources: 41c25b17-0278-81ee-b12f-000b110aec39
+    debates: 41c25b17-0278-81b2-b803-000b057ec87d
+    settings: 41c25b17-0278-81a4-9827-000b65e53bda
 
 models:
   # Claude API on the Max plan's $100/month credit (link a Console org in
@@ -262,7 +272,7 @@ people:
     lean: mixed
     priority: true
     channels:
-      - {type: web_index, url: null, find: "J.P. Morgan Eye on the Market page"}
+      - {type: press_mentions}   # JPM page blocks robots; covered via news mentions
 
   - name: "Jeremy Grantham"
     org: "GMO"
@@ -271,14 +281,14 @@ people:
     contrarian: true
     priority: true
     channels:
-      - {type: web_index, url: null, find: "GMO research library"}
+      - {type: web_index, url: "https://www.gmo.com/americas/research-library/"}
 
   - name: "Marc Rubinstein"
     sectors: [financials]
     lean: mixed
     priority: true
     channels:
-      - {type: rss, url: null, find: "Net Interest Substack feed"}
+      - {type: rss, url: "https://www.netinterest.co/feed"}
 
   - name: "Steve Dresser"
     org: "Grocery Insight"
@@ -305,7 +315,7 @@ people:
     contrarian: true
     priority: true
     channels:
-      - {type: rss, url: null, find: "Where's Your Ed At feed"}
+      - {type: rss, url: "https://www.wheresyoured.at/rss/"}
 
   - name: "Chris Whalen"
     sectors: [financials]
@@ -313,7 +323,7 @@ people:
     contrarian: true
     priority: true
     channels:
-      - {type: rss, url: null, find: "The Institutional Risk Analyst feed"}
+      - {type: rss, url: "https://www.theinstitutionalriskanalyst.com/blog-feed.xml"}
 
   # Wider pool (not priority)
   - {name: "Dylan Patel", org: "SemiAnalysis", sectors: [tmt], lean: bull,
@@ -327,80 +337,80 @@ people:
   - {name: "Benedict Evans", sectors: [tmt], lean: mixed,
      channels: [{type: email, find: "Benedict Evans weekly newsletter"}]}
   - {name: "Gary Marcus", sectors: [tmt], lean: bear, contrarian: true,
-     channels: [{type: rss, url: null, find: "Marcus on AI Substack feed"}]}
+     channels: [{type: rss, url: "https://garymarcus.substack.com/feed"}]}
   - {name: "David Cahn", org: "Sequoia", sectors: [tmt], lean: bear, contrarian: true,
-     channels: [{type: web_index, url: null, find: "Sequoia articles by David Cahn"}]}
+     channels: [{type: web_index, url: "https://www.sequoiacap.com/people/david-cahn/"}]}
   - {name: "Eric Seufert", org: "Mobile Dev Memo", sectors: [tmt], lean: mixed,
-     channels: [{type: rss, url: null, find: "Mobile Dev Memo feed"}]}
+     channels: [{type: rss, url: "https://mdm.co/mdm.rss"}]}
   - {name: "Brian Wieser", org: "Madison and Wall", sectors: [tmt], lean: mixed,
-     channels: [{type: rss, url: null, find: "Madison and Wall feed"}]}
+     channels: [{type: rss, url: "https://madisonandwall.substack.com/feed"}]}
   - {name: "Doug Shapiro", org: "The Mediator", sectors: [tmt], lean: mixed,
-     channels: [{type: rss, url: null, find: "The Mediator Substack feed"}]}
+     channels: [{type: rss, url: "https://dougshapiro.substack.com/feed"}]}
   - {name: "Jim Chanos", sectors: [tmt, financials], lean: bear, contrarian: true,
      channels: [{type: podcast_mentions}, {type: press_mentions}]}
   - {name: "Gordon Johnson", org: "GLJ Research", sectors: [autos], lean: bear, contrarian: true,
      channels: [{type: press_mentions}]}
   - {name: "Michael Dunne", sectors: [autos], lean: mixed,
-     channels: [{type: rss, url: null, find: "Michael Dunne newsletter feed"}]}
+     channels: [{type: rss, url: "https://newsletter.dunneinsights.com/feed"}]}
   - {name: "Clive Black", org: "Shore Capital", sectors: [staples_retail], lean: mixed,
      channels: [{type: press_mentions}]}
   - {name: "Richard Hyman", sectors: [staples_retail], lean: mixed,
-     channels: [{type: rss, url: null, find: "Richard Hyman retail blog"}]}
+     channels: [{type: press_mentions}]}   # no blog of his own; quoted widely in UK retail press
   - {name: "Terry Smith", org: "Fundsmith", sectors: [staples_retail], lean: bull,
-     channels: [{type: web_index, url: null, find: "Fundsmith annual letter"}]}
+     channels: [{type: web_index, url: "https://www.fundsmith.co.uk/owners-manual/annual-letters/"}]}   # unverified
   - {name: "Nick Train", org: "Lindsell Train", sectors: [staples_retail], lean: bull,
-     channels: [{type: web_index, url: null, find: "Lindsell Train monthly fund commentary"}]}
+     channels: [{type: web_index, url: "https://www.lindselltrain.com/"}]}   # unverified
   - {name: "Matt Levine", org: "Bloomberg", sectors: [financials], lean: mixed,
      channels: [{type: email, find: "Money Stuff newsletter sign-up"}]}
   - {name: "Dan Davies", sectors: [financials], lean: mixed,
-     channels: [{type: rss, url: null, find: "Back of Mind Substack feed"}]}
+     channels: [{type: rss, url: "https://backofmind.substack.com/feed"}]}
   - {name: "Dan Rasmussen", org: "Verdad", sectors: [financials], lean: bear, contrarian: true,
      channels: [{type: email, find: "Verdad weekly research"}]}
   - {name: "Cliff Asness", org: "AQR", sectors: [financials, macro], lean: bear, contrarian: true,
-     channels: [{type: web_index, url: null, find: "AQR Cliff's Perspectives"}]}
+     channels: [{type: web_index, url: "https://www.aqr.com/Insights/Perspectives"}]}
   - {name: "Howard Marks", org: "Oaktree", sectors: [macro, financials], lean: mixed,
-     channels: [{type: web_index, url: null, find: "Oaktree memos"}]}
+     channels: [{type: web_index, url: "https://www.oaktreecapital.com/insights/memos"}]}
   - {name: "John Hussman", org: "Hussman Funds", sectors: [macro], lean: bear, contrarian: true,
      note: "Right in 2000 and 2008, wrong through the 2010s: read as a stress test",
-     channels: [{type: web_index, url: null, find: "Hussman monthly market comment"}]}
+     channels: [{type: web_index, url: "https://www.hussmanfunds.com/comment/"}]}
   - {name: "Michael Pettis", sectors: [macro], lean: bear, contrarian: true,
-     channels: [{type: rss, url: null, find: "Michael Pettis China Financial Markets"}]}
+     channels: [{type: web_index, url: "https://carnegieendowment.org/chinafinancialmarkets/experts/444?lang=en"}]}
   - {name: "Brad Setser", org: "CFR", sectors: [macro], lean: mixed,
-     channels: [{type: rss, url: null, find: "CFR Follow the Money blog feed"}]}
+     channels: [{type: web_index, url: "https://www.cfr.org/blogs/follow-the-money"}]}
 
 # ── Institutional and data feeds (not tied to one person) ────────────
 feeds:
   research:
-    - {name: "Goldman Sachs Top of Mind", type: web_index, url: null, find: "goldmansachs.com insights Top of Mind"}
-    - {name: "BlackRock Investment Institute weekly", type: web_index, url: null, tag: consensus_marker}
-    - {name: "Bank Underground (BoE staff)", type: rss, url: null}
-    - {name: "Liberty Street Economics (NY Fed)", type: rss, url: null}
-    - {name: "BIS Quarterly Review", type: web_index, url: null}
+    - {name: "Goldman Sachs Top of Mind", type: web_index, url: null, note: "landing page lists no issues; covered by headlines and news mentions"}
+    - {name: "BlackRock Investment Institute weekly", type: web_index, url: "https://www.blackrock.com/corporate/insights/blackrock-investment-institute/publications/weekly-commentary", tag: consensus_marker}
+    - {name: "Bank Underground (BoE staff)", type: rss, url: "https://bankunderground.co.uk/feed/"}
+    - {name: "Liberty Street Economics (NY Fed)", type: rss, url: "https://libertystreeteconomics.newyorkfed.org/feed/"}
+    - {name: "BIS Quarterly Review", type: web_index, url: "https://www.bis.org/quarterlyreviews/index.htm"}   # unverified
   central_banks:
-    - {name: "Federal Reserve press releases and speeches", type: rss, url: null}
-    - {name: "ECB press releases and speeches", type: rss, url: null}
-    - {name: "Bank of England news and speeches", type: rss, url: null}
-    - {name: "Bank of Japan", type: rss, url: null}
+    - {name: "Federal Reserve press releases and speeches", type: rss, url: "https://www.federalreserve.gov/feeds/press_all.xml"}
+    - {name: "ECB press releases and speeches", type: rss, url: "https://www.ecb.europa.eu/rss/press.html"}
+    - {name: "Bank of England news and speeches", type: rss, url: "https://www.bankofengland.co.uk/rss/news"}
+    - {name: "Bank of Japan", type: rss, url: "https://www.boj.or.jp/en/rss/whatsnew.xml"}
   sector_data:
-    - {name: "SMMT registrations", sector: autos, type: web_index, url: null}
-    - {name: "ACEA registrations", sector: autos, type: web_index, url: null}
-    - {name: "Rho Motion EV sales", sector: autos, type: web_index, url: null}
-    - {name: "CnEVPost", sector: autos, type: rss, url: null}
-    - {name: "Manheim Used Vehicle Value Index", sector: autos, type: web_index, url: null}
-    - {name: "Kantar/Worldpanel grocery share", sector: staples_retail, type: web_index, url: null}
-    - {name: "BRC-KPMG Retail Sales Monitor", sector: staples_retail, type: web_index, url: null}
+    - {name: "SMMT registrations", sector: autos, type: web_index, url: "https://www.smmt.co.uk/category/news/registrations/"}   # unverified
+    - {name: "ACEA registrations", sector: autos, type: web_index, url: "https://www.acea.auto/nav/?content=press-releases"}   # unverified
+    - {name: "Rho Motion EV sales", sector: autos, type: web_index, url: "https://rhomotion.com/news/"}   # unverified
+    - {name: "CnEVPost", sector: autos, type: rss, url: "https://cnevpost.com/feed/"}
+    - {name: "Manheim Used Vehicle Value Index", sector: autos, type: web_index, url: "https://site.manheim.com/en/services/consulting/used-vehicle-value-index.html"}   # unverified
+    - {name: "Kantar/Worldpanel grocery share", sector: staples_retail, type: web_index, url: null, note: "monthly; picked up through headlines and Google News"}
+    - {name: "BRC-KPMG Retail Sales Monitor", sector: staples_retail, type: web_index, url: "https://brc.org.uk/news-and-events/news/"}   # unverified
     - {name: "Fed H.8 bank data", sector: financials, type: api, source: fred}
   headlines:
-    - {name: "FT", type: rss, url: null, note: "headline + link only"}
-    - {name: "CNBC markets", type: rss, url: null}
-    - {name: "MarketWatch", type: rss, url: null}
-    - {name: "Nikkei Asia", type: rss, url: null}
-    - {name: "SCMP business", type: rss, url: null}
-    - {name: "Electrek", sector: autos, type: rss, url: null}
-    - {name: "InsideEVs", sector: autos, type: rss, url: null}
-    - {name: "The Grocer", sector: staples_retail, type: rss, url: null}
-    - {name: "Retail Gazette", sector: staples_retail, type: rss, url: null}
-    - {name: "Banking Dive", sector: financials, type: rss, url: null}
+    - {name: "FT", type: rss, url: "https://www.ft.com/markets?format=rss", note: "headline + link only"}   # unverified from here
+    - {name: "CNBC markets", type: rss, url: "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=20910258"}   # unverified from here
+    - {name: "MarketWatch", type: rss, url: "https://feeds.content.dowjones.io/public/rss/mw_topstories"}
+    - {name: "Nikkei Asia", type: rss, url: "https://asia.nikkei.com/rss/feed/nar"}   # unverified from here
+    - {name: "SCMP business", type: rss, url: "https://www.scmp.com/rss/92/feed"}
+    - {name: "Electrek", sector: autos, type: rss, url: "https://electrek.co/feed/"}
+    - {name: "InsideEVs", sector: autos, type: rss, url: "https://insideevs.com/rss/news/all/"}
+    - {name: "The Grocer", sector: staples_retail, type: rss, url: null, note: "feed refused automated checks; add one if you find it"}
+    - {name: "Retail Gazette", sector: staples_retail, type: rss, url: "https://www.retailgazette.co.uk/feed/"}   # unverified from here
+    - {name: "Banking Dive", sector: financials, type: rss, url: "https://www.bankingdive.com/feeds/news/"}
     - {name: "Google News per watch-list name", type: google_news_rss, from_watchlists: true}
   earnings:
     - {name: Finnhub, type: api, key_env: FINNHUB_API_KEY, coverage: US}
@@ -422,11 +432,11 @@ feeds:
     - {name: "Heavy Moat Investments", url: "https://heavymoatinvestments.substack.com", ideas: true}
     - {name: "Groundbreaker", url: "https://www.groundbrkr.com", ideas: true}
     - {name: "Investment Talk", url: "https://www.investmenttalk.co", ideas: true}
-    - {name: "Under-Followed-Stocks", url: null, ideas: true, verify: true}
-    - {name: "$1M to $100M Portfolio Project", url: null, ideas: true, verify: true}
-    - {name: "Capital Curiosity", url: null, ideas: true, verify: true}
-    - {name: "First Principles Second Order", url: null, ideas: true, verify: true}
-    - {name: "Fundamentally Sound", url: null, ideas: true, verify: true}
+    - {name: "Under-Followed-Stocks", url: "https://underfollowedstocks.substack.com", ideas: true}
+    - {name: "$1M to $100M Portfolio Project", url: "https://maaizkhan.substack.com", ideas: true, active: false}   # one of the handles you said to ignore
+    - {name: "Capital Curiosity", url: "https://tenichols94.substack.com", ideas: true, active: false}   # one of the handles you said to ignore
+    - {name: "First Principles Second Order", url: null, ideas: true, active: false}   # could not identify; likely an ignored handle
+    - {name: "Fundamentally Sound", url: "https://manuinvests.substack.com", ideas: true}
     # Followed in the Substack reader but not subscribed; add by setting active: true
     - {name: "The Fiercely Independent Investor (Charlie Huggins)", url: "https://charliehuggins.substack.com", sectors: [staples_retail], active: false}
     - {name: "maaizkhan", url: "https://maaizkhan.substack.com", sectors: [macro], active: false}
@@ -448,14 +458,14 @@ substack_discovery:
   weekly_shortlist: 5              # Notion Discovery database: Track / Ignore
   public_pages_only: true
   short_sellers:   # public research pages; checked daily
-    - {name: "Muddy Waters", url: null}
-    - {name: "Spruce Point", url: null}
-    - {name: "Kerrisdale Capital", url: null}
-    - {name: "Culper Research", url: null}
-    - {name: "Wolfpack Research", url: null}
-    - {name: "Grizzly Research", url: null}
-    - {name: "Fuzzy Panda Research", url: null}
-    - {name: "Viceroy Research", url: null}
+    - {name: "Muddy Waters", url: "https://www.muddywatersresearch.com/research/"}   # unverified
+    - {name: "Spruce Point", url: "https://www.sprucepointcap.com/research"}   # unverified
+    - {name: "Kerrisdale Capital", url: "https://www.kerrisdalecap.com/blog/"}   # unverified
+    - {name: "Culper Research", url: "https://culperresearch.com/"}   # unverified
+    - {name: "Wolfpack Research", url: "https://wolfpackresearch.com/research/"}   # unverified
+    - {name: "Grizzly Research", url: "https://grizzlyreports.com/"}   # unverified
+    - {name: "Fuzzy Panda Research", url: "https://fuzzypandaresearch.com/"}   # unverified
+    - {name: "Viceroy Research", url: "https://viceroyresearch.org/"}   # unverified
   bluesky:         # profile RSS: https://bsky.app/profile/<handle>/rss
     handles: []    # add handles for people on your list who post there
 
@@ -482,11 +492,11 @@ podcasts:
   - {name: "Merryn Talks Money", url: null, transcript: on_demand}
   - {name: "Macro Musings", url: null, transcript: on_demand}
   - {name: "Monetary Matters", url: null, transcript: on_demand}
-  - {name: "Capital Allocators", url: null, transcript: on_demand, sector: financials}
+  - {name: "Capital Allocators", url: "https://tedseides.libsyn.com/rss", transcript: on_demand, sector: financials}
 
 # ── Email inbox (newsletters, incl. FT, Bloomberg, paid Substacks) ───
 # A dedicated mailbox; subscribe newsletters to it or forward them.
-# Messages from senders in `subscriber_senders` go to Groq only.
+# Mail from `subscriber_senders` is marked as subscriber content: the briefing paraphrases it and never quotes it.
 email_inbox:
   imap_host_env: IMAP_HOST
   user_env: IMAP_USER

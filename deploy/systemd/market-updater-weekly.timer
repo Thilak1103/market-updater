@@ -1,0 +1,10 @@
+[Unit]
+Description=Market Updater: earnings dates, fundamentals, Substack discovery (schedule)
+
+[Timer]
+OnCalendar=Sun *-*-* 18:00:00 Europe/London
+Persistent=true
+Unit=market-updater-weekly.service
+
+[Install]
+WantedBy=timers.target

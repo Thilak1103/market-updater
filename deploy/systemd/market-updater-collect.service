@@ -1,0 +1,14 @@
+[Unit]
+Description=Market Updater: collect and extract
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/opt/market-updater
+EnvironmentFile=/opt/market-updater/.env
+Environment=MU_DATA_DIR=/opt/market-updater/data
+ExecStart=/opt/market-updater/.venv/bin/python -m market_updater collect
+TimeoutStartSec=70min
+Nice=5
