@@ -145,7 +145,8 @@ def collect_all(settings: Settings, db: DB, notion=None, now: datetime | None = 
         sector_of = {t: settings.sector_of_ticker(t) or "elsewhere" for t in company_names}
         collected += watchlist_headlines(company_names, sector_of, since)
 
-    quoted = [s for s in settings.sources if s.active and s.type == "press_mentions"]
+    quoted = [s for s in settings.sources
+              if s.active and (s.type == "press_mentions" or s.also_mentions)]
     if quoted and os.environ.get("MU_HEADLINES", "1") == "1":
         try:
             collected += people_mentions(quoted, since)
