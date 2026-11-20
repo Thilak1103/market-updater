@@ -63,6 +63,11 @@ jobs:
       - name: Write and publish
         if: steps.guard.outputs.go
         run: python -m market_updater run --force
+      - name: Show today's briefing on the run page
+        if: always() && steps.guard.outputs.go
+        run: |
+          f=$(ls -t data/out/*.md 2>/dev/null | head -1)
+          if [ -n "$f" ]; then cat "$f" >> "$GITHUB_STEP_SUMMARY"; echo "----- $f -----"; cat "$f"; fi
       - name: Keep today's briefing as a downloadable file (also when Notion fails)
         if: always() && steps.guard.outputs.go
         uses: actions/upload-artifact@v4

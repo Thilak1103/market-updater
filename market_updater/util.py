@@ -101,9 +101,11 @@ def clean_env() -> list[str]:
 def setup_logging() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s",
                         datefmt="%H:%M:%S")
-    for noisy in ("httpx", "httpcore", "anthropic", "yfinance", "urllib3", "peewee", "trafilatura",
-                  "trafilatura.core", "trafilatura.htmlprocessing", "htmldate", "courlan"):
+    for noisy in ("httpx", "httpcore", "anthropic", "yfinance", "urllib3", "peewee"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
+    # The HTML extractor logs every non-HTML snippet as an ERROR; it's harmless, so hide it.
+    for parser in ("trafilatura", "htmldate", "courlan", "justext"):
+        logging.getLogger(parser).setLevel(logging.CRITICAL)
 
 
 _ws = re.compile(r"\s+")
