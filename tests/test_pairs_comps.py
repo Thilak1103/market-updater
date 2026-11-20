@@ -26,3 +26,24 @@ def test_comps_table_median_and_premium():
     assert out["median"]["ev_ebitda"] == 10.0
     assert round(out["premium"]["B"]["ev_ebitda"]) == -20
     assert "ROIC.ai" in md
+
+
+def test_targets_tracking_and_scorecard(db, fake_prices, settings):
+    import math
+    from datetime import date
+    from market_updater.compose import ideas as I
+    from market_updater.market.pairs import pair_stats
+    fake_prices.load(["NVDA", "AMD"])
+    st = pair_stats(fake_prices.frame, "NVDA", "AMD")
+    target, tret, sret, end, label = I.plan(st, {}, date(2026, 11, 20))
+    assert target > st.spread_now and tret > 0 > sret and end == "2026-12-18"
+    db.ex("INSERT INTO ideas(created,long,short,hedge_ratio,corr,entry_long,entry_short,entry_spread,spread_std,"
+          "stop_spread,target_spread,target_return,following) VALUES ('2026-11-19','NVDA','AMD',?,?,?,?,?,?,?,?,?,1)",
+          (st.beta, st.corr, st.entry_long * 0.8, st.entry_short, math.log(st.entry_long * 0.8) - st.beta * math.log(st.entry_short),
+           st.spread_std_60, -99, math.log(st.entry_long * 0.85) - st.beta * math.log(st.entry_short), 0.05))
+    [u] = I.update_open(db, fake_prices, settings, date(2026, 11, 20))
+    assert u["outcome"] == "Hit target" and u["following"] and u["pnl"] > 0.2
+    card = I.scorecard(db)
+    assert "| Hit target | 1 | 1 |" in card
+    box = I.following_markdown([dict(u, status="Open", progress=0.5)], "abc")
+    assert "callout ⭐ yellow" in box and "50% of the way to target" in box and "notion:abc" in box

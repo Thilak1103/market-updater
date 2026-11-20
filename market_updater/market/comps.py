@@ -4,11 +4,10 @@ from __future__ import annotations
 import statistics
 from typing import Any, Callable
 
+# Valuation only: growth, margins, leverage and returns go into the analysis, not the table.
 COLUMNS = [
-    ("market_cap", "Mkt cap", "money"), ("ev_ebitda", "EV/EBITDA", "x"), ("ev_sales", "EV/Sales", "x"),
-    ("pe_ltm", "P/E LTM", "x"), ("pe_fwd", "P/E fwd*", "x"), ("rev_growth", "Rev growth", "pct"),
-    ("ebitda_margin", "EBITDA mgn", "pct"), ("roic", "ROIC", "pct"), ("nd_ebitda", "ND/EBITDA", "x"),
-    ("ret_1m", "1m", "pct"), ("ret_ytd", "YTD", "pct"),
+    ("ev_ebitda", "EV/EBITDA", "x"), ("ev_sales", "EV/Sales", "x"),
+    ("pe_ltm", "P/E LTM", "x"), ("pe_fwd", "P/E fwd*", "x"),
 ]
 
 
@@ -30,14 +29,12 @@ def _fmt(v: Any, kind: str) -> str:
 
 
 def build(legs: list[str], peers: list[str], fundamentals: Callable[[str], dict],
-          returns: Callable[[str, str], float | None]) -> dict:
+          returns: Callable[[str, str], float | None] | None = None) -> dict:
     """Return {'rows': [...], 'median': {...}, 'premium': {...}, 'markdown': str}."""
     tickers = list(dict.fromkeys(legs + [p for p in peers if p not in legs]))
     rows = []
     for t in tickers:
         f = dict(fundamentals(t) or {})
-        f["ret_1m"] = returns(t, "1m")
-        f["ret_ytd"] = returns(t, "ytd")
         f["ticker"] = t
         rows.append(f)
     peer_rows = [r for r in rows if r["ticker"] not in legs] or rows
@@ -64,8 +61,8 @@ def build(legs: list[str], peers: list[str], fundamentals: Callable[[str], dict]
     lines.append("| Peer median | " + " | ".join(_fmt(median.get(k), kind) for k, _, kind in COLUMNS) + " |")
     srcs = sorted({s for r in rows for s in (r.get("sources") or {}).values()} | {"Yahoo/Stooq prices"})
     asof = max((r.get("asof") or "" for r in rows), default="")
-    note = (f"Sources: {', '.join(srcs)}; fundamentals as of {asof or 'latest available'}. "
-            "*Forward P/E uses Yahoo's consensus via yfinance (unofficial).")
+    note = (f"*Sources: {', '.join(srcs)}; fundamentals as of {asof or 'latest available'}. "
+            "Forward P/E uses Yahoo's consensus (unofficial).*")
     return {"rows": rows, "median": median, "premium": premium,
             "markdown": "\n".join(lines) + "\n\n" + note}
 

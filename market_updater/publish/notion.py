@@ -64,17 +64,15 @@ class Notion:
 
     def create_page(self, ds_name: str, properties: dict, children: list[dict] | None = None,
                     icon: str | None = None) -> dict:
-        children = children or []
         body: dict[str, Any] = {
             "parent": {"type": "data_source_id", "data_source_id": self.ds(ds_name)},
             "properties": properties,
-            "children": children[:100],
         }
         if icon:
             body["icon"] = {"type": "emoji", "emoji": icon}
         page = self._req("POST", "/pages", body)
-        if len(children) > 100:
-            self.append(page["id"], children[100:])
+        if children:
+            self.append(page["id"], children)
         return page
 
     def page_text(self, page_id: str, max_blocks: int = 300) -> str:
@@ -94,8 +92,66 @@ class Notion:
         return "\n".join(parts)
 
     def append(self, block_id: str, children: list[dict]) -> None:
+        """Append blocks, however deeply nested.
+
+        Notion accepts at most two levels of nesting and 100 children per request, so deeper
+        or larger sub-trees are sent first without their children, which are then appended to
+        the newly created block.
+        """
+        from .blocks import depth
         for batch in chunks(children, 100):
-            self._req("PATCH", f"/blocks/{block_id}/children", {"children": batch})
+            send, later = [], []
+            for i, b in enumerate(batch):
+                body = b.get(b["type"], {})
+                kids = body.get("children")
+                if kids and b["type"] != "table" and (depth(b) > 3 or len(kids) > 100):
+                    b = {**b, b["type"]: {k: v for k, v in body.items() if k != "children"}}
+                    later.append((i, kids))
+                send.append(b)
+            res = self._req("PATCH", f"/blocks/{block_id}/children", {"children": send})
+            results = res.get("results", [])
+            for i, kids in later:
+                if i < len(results):
+                    self.append(results[i]["id"], kids)
+
+    def children(self, block_id: str) -> list[dict]:
+        out, cursor = [], None
+        while True:
+            q = f"/blocks/{block_id}/children?page_size=100" + (f"&start_cursor={cursor}" if cursor else "")
+            data = self._req("GET", q)
+            out += data.get("results", [])
+            if not data.get("has_more"):
+                return out
+            cursor = data.get("next_cursor")
+
+    def update_block(self, block_id: str, body: dict) -> dict:
+        return self._req("PATCH", f"/blocks/{block_id}", body)
+
+    def create_child_page(self, parent_page_id: str, title_text: str, children: list[dict],
+                          icon: str | None = None) -> dict:
+        body: dict[str, Any] = {"parent": {"type": "page_id", "page_id": parent_page_id},
+                                "properties": {"title": {"title": _rt(title_text)}}}
+        if icon:
+            body["icon"] = {"type": "emoji", "emoji": icon}
+        page = self._req("POST", "/pages", body)
+        if children:
+            self.append(page["id"], children)
+        return page
+
+    def upload_file(self, data: bytes, filename: str, content_type: str = "image/png") -> str | None:
+        """Upload a small file (under 20 MB) and return its file-upload id for an image block."""
+        try:
+            up = self._req("POST", "/file_uploads", {"filename": filename, "content_type": content_type})
+            r = httpx.post(f"{API}/file_uploads/{up['id']}/send", timeout=60, headers={
+                "Authorization": f"Bearer {self.token}", "Notion-Version": NOTION_VERSION},
+                files={"file": (filename, data, content_type)})
+            if r.status_code >= 400:
+                log.warning("Notion upload of %s failed: %s %s", filename, r.status_code, r.text[:200])
+                return None
+            return up["id"]
+        except Exception as e:
+            log.warning("Notion upload of %s failed: %s", filename, e)
+            return None
 
     def update_page(self, page_id: str, properties: dict) -> dict:
         return self._req("PATCH", f"/pages/{page_id}", {"properties": properties})

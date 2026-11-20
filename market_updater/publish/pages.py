@@ -26,9 +26,62 @@ def publish_briefing(notion: N.Notion, day: date, title: str, markdown: str, *, 
         notion.update_page(page_id, props)
         notion.archive_children(page_id)
         notion.append(page_id, blocks)
-        return existing[0].get("url", page_id)
-    page = notion.create_page("briefings", props, blocks, icon="📈")
-    return page.get("url", page["id"])
+        return existing[0].get("url", page_id), page_id
+    page = notion.create_page("briefings", props, blocks, icon="📰")
+    return page.get("url", page["id"]), page["id"]
+
+
+def publish_reading(notion: N.Notion, day: date, out, markdown: str, claims_by_id: dict) -> str:
+    """Create (or refresh) today's reading page for one core sector. Returns its page id."""
+    from ..analysis.checks import link_citations
+    from ..compose.sections import ICONS
+    label = SECTOR_LABELS.get(out.sector.key, out.sector.name)
+    props = {"Reading": N.title(f"{out.sector.name} reading, {day.strftime('%a %d %b')}"),
+             "Date": N.date(day.isoformat()), "Sector": N.select(label), "Pieces": N.number(len(out.reading))}
+    blocks = to_blocks(link_citations(markdown, claims_by_id))
+    existing = notion.query("reading", filter={"and": [
+        {"property": "Date", "date": {"equals": day.isoformat()}},
+        {"property": "Sector", "select": {"equals": label}}]})
+    if existing:
+        page_id = existing[0]["id"]
+        notion.update_page(page_id, props)
+        notion.archive_children(page_id)
+        notion.append(page_id, blocks)
+        return page_id.replace("-", "")
+    page = notion.create_page("reading", props, blocks, icon=ICONS.get(out.sector.key, "📚"))
+    return page["id"].replace("-", "")
+
+
+def link_reading(notion: N.Notion, reading_id: str, briefing_url: str | None) -> None:
+    notion.update_page(reading_id, {"Briefing": N.url(briefing_url)})
+
+
+def update_home(notion: N.Notion, settings, day: date, briefing_id: str, headline: str) -> None:
+    """Point the 'Today's briefing' box at the top of the Market Updater page at today's page."""
+    home = (settings.get("notion.pages", {}) or {}).get("home")
+    if not home:
+        return
+    box = next((b for b in notion.children(home) if b.get("type") == "callout"
+                and (b["callout"].get("icon") or {}).get("emoji") == "📰"), None)
+    rich = [{"type": "text", "text": {"content": f"Today's briefing ({day.strftime('%a %d %b')}): "},
+             "annotations": {"bold": True}}]
+    if headline:
+        rich.append({"type": "text", "text": {"content": headline.rstrip() + " "}})
+    rich.append({"type": "mention", "mention": {"type": "page", "page": {"id": briefing_id}}})
+    if box:
+        notion.update_block(box["id"], {"callout": {"rich_text": rich}})
+    else:
+        log.warning("No 📰 box on the Market Updater page; add a callout with that icon to show today's briefing")
+
+
+def sync_following(notion: N.Notion, db: DB) -> int:
+    """Copy the Following ticks from the Ideas database into SQLite. Returns how many are followed."""
+    ticked = {p["id"] for p in notion.query("ideas", filter={"property": "Following", "checkbox": {"equals": True}})}
+    for r in db.q("SELECT id, notion_page_id, following FROM ideas WHERE notion_page_id IS NOT NULL"):
+        want = int(r["notion_page_id"] in ticked)
+        if want != (r["following"] or 0):
+            db.ex("UPDATE ideas SET following=? WHERE id=?", (want, r["id"]))
+    return len(ticked)
 
 
 def push_views(notion: N.Notion, db: DB) -> int:
@@ -58,23 +111,57 @@ def push_views(notion: N.Notion, db: DB) -> int:
     return n
 
 
-def push_ideas(notion: N.Notion, db: DB) -> None:
+def _idea_props(r) -> dict:
+    return {k: v for k, v in {
+        "Return so far": N.number(round(r["pnl"] or 0, 4)), "Status": N.select(r["status"]),
+        "Outcome": N.select(r["outcome"] or "Open"),
+        "Best so far": N.number(round(r["best"] or 0, 4)), "Worst so far": N.number(round(r["worst"] or 0, 4)),
+        "Progress to target": N.number(round((r["pnl"] or 0) / r["target_return"], 3)) if r["target_return"] else None,
+    }.items() if v is not None}
+
+
+def push_ideas(notion: N.Notion, db: DB, day_counts: dict[int, str] | None = None,
+               charts: dict[tuple[str, str], bytes] | None = None) -> None:
+    """Create a page per new idea (the pitch is the page body) and refresh open ideas' tracking."""
+    from ..analysis.checks import CITE, link_citations
     for r in db.q("SELECT * FROM ideas WHERE notion_page_id IS NULL"):
-        page = notion.create_page("ideas", {
-            "Idea": N.title(f"Long {r['long']} / short {r['short']}"), "Long": N.rich(r["long"]),
-            "Short": N.rich(r["short"]), "Sector": N.select(SECTOR_LABELS.get(r["sector"] or "", "Elsewhere")),
+        spec = json.loads(r["spec"] or "{}")
+        ids = [int(x) for x in json.loads(r["source_names"] or "[]")]
+        claims = {}
+        if ids:
+            q = ("SELECT c.id, i.url FROM claims c JOIN items i ON i.id=c.item_id WHERE c.id IN (%s)"
+                 % ",".join("?" * len(ids)))
+            claims = {c["id"]: {"url": c["url"]} for c in db.q(q, ids)}
+        png = (charts or {}).get((r["long"], r["short"]))
+        up = notion.upload_file(png, f"spread-{r['long']}-{r['short']}.png") if png else None
+        body = spec.get("markdown", "").replace(
+            "{{chart}}", f"![The hedged spread over the last year, with entry, target and stop](upload:{up})" if up else "")
+        body = "\n".join(l for l in link_citations(body, claims).splitlines() if "Tick **Following**" not in l)
+        thesis = CITE.sub("", r["thesis"] or "").replace("  ", " ")
+        props = {
+            "Idea": N.title(f"Long {r['long']} / short {r['short']}" + (f": {r['headline']}" if r["headline"] else "")),
+            "Long": N.rich(r["long"]), "Short": N.rich(r["short"]),
+            "Sector": N.select(SECTOR_LABELS.get(r["sector"] or "", "Elsewhere")),
             "Origin": N.select(r["origin"]), "Against consensus": N.checkbox(r["against_consensus"]),
-            "Confidence": N.select(r["confidence"]), "Status": N.select(r["status"]),
-            "Entry date": N.date(r["created"]), "Hedge ratio": N.number(round(r["hedge_ratio"], 3)),
-            "Correlation 1y": N.number(round(r["corr"], 3)), "Stop (spread)": N.number(round(r["stop_spread"], 4)),
-            "Paper P&L": N.number(round(r["pnl"] or 0, 4)), "Thesis": N.rich(truncate(r["thesis"] or "", 1900)),
-            "What proves it wrong": N.rich(truncate(r["wrong"] or "", 1900)),
-        })
+            "Conviction": N.select(r["confidence"]), "Entry date": N.date(r["created"]),
+            "Hedge ratio": N.number(round(r["hedge_ratio"], 3)), "Correlation 1y": N.number(round(r["corr"], 3)),
+            "Stop (spread)": N.number(round(r["stop_spread"], 4)),
+            "Target return": N.number(round(r["target_return"], 4)) if r["target_return"] is not None else N.number(None),
+            "Stop return": N.number(round(r["stop_return"], 4)) if r["stop_return"] is not None else N.number(None),
+            "Horizon end": N.date(r["horizon_end"]), "Day": N.rich("1 of 20"),
+            "Briefing": N.url(r["briefing_url"]),
+            "Thesis": N.rich(truncate(thesis, 1900)),
+            "What proves it wrong": N.rich(truncate(CITE.sub("", r["wrong"] or ""), 1900)),
+            **_idea_props(r),
+        }
+        page = notion.create_page("ideas", props, to_blocks(body) if body else None, icon="📈")
         db.ex("UPDATE ideas SET notion_page_id=? WHERE id=?", (page["id"], r["id"]))
     for r in db.q("SELECT * FROM ideas WHERE notion_page_id IS NOT NULL AND (status='Open' OR closed>=date('now','-1 day'))"):
+        props = _idea_props(r)
+        if day_counts and r["id"] in day_counts:
+            props["Day"] = N.rich(day_counts[r["id"]])
         try:
-            notion.update_page(r["notion_page_id"], {"Paper P&L": N.number(round(r["pnl"] or 0, 4)),
-                                                     "Status": N.select(r["status"])})
+            notion.update_page(r["notion_page_id"], props)
         except Exception as e:
             log.warning("Could not update idea %s: %s", r["id"], e)
 

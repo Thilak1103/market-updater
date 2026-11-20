@@ -1,0 +1,35 @@
+# One-off jobs you start by hand: Actions → "maintenance" → Run workflow → pick a job.
+#   sync-sources    copy feed URLs and YAML-only sources from config/briefing.yaml into the
+#                   Notion Sources table (new ones arrive paused, so nothing changes until you tick them)
+#   check-sources   try every feed once and print which ones work
+#   export-settings save today's Notion settings as a backup
+name: maintenance
+on:
+  workflow_dispatch:
+    inputs:
+      job:
+        description: "Which job to run"
+        required: true
+        default: sync-sources
+        type: choice
+        options: [sync-sources, check-sources, export-settings]
+concurrency: {group: briefing, cancel-in-progress: false}
+jobs:
+  maintenance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+      MU_DATA_DIR: ${{ github.workspace }}/data
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12", cache: pip}
+      - run: pip install -r requirements.txt
+      - run: python -m market_updater ${{ inputs.job }} | tee out.txt
+      - name: Show the result on the run page
+        if: always()
+        run: |
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          tail -n 200 out.txt >> "$GITHUB_STEP_SUMMARY" || true
+          echo '```' >> "$GITHUB_STEP_SUMMARY"

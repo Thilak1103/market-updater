@@ -213,6 +213,7 @@ _SETTING_MAP = {
     "trade ideas per day": ("trade_ideas.per_day", "range"),
     "minimum pair correlation (1y)": ("trade_ideas.min_pair_correlation_1y", "float"),
     "stop (multiple of 60-day spread volatility)": ("trade_ideas.stop_spread_vol_multiple", "float"),
+    "target (multiple of 60-day spread volatility)": ("trade_ideas.target_spread_vol_multiple", "float"),
     "maximum holding period (trading days)": ("trade_ideas.max_holding_trading_days", "int"),
     "peers in each comps table": ("trade_ideas.comps.peers_per_idea", "range"),
     "elsewhere: sector move threshold": ("thresholds.elsewhere_sector_move_pct", "float"),

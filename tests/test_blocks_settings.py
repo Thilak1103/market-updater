@@ -52,3 +52,42 @@ def test_clean_env_strips_pasted_line_breaks(monkeypatch):
     assert sorted(clean_env()) == ["GROQ_API_KEY", "NOTION_TOKEN", "TELEGRAM_CHAT_ID"]
     assert os.environ["NOTION_TOKEN"] == "ntn_abc123" and os.environ["GROQ_API_KEY"] == "gsk_x"
     assert "TELEGRAM_CHAT_ID" not in os.environ
+
+
+def test_callouts_colours_mentions_and_images():
+    from market_updater.publish.blocks import depth, to_blocks
+    md = ("::: callout 📈 gray\n**Long A · Short B** — headline\n**Why:** it <span color=\"red\">fell 2%</span>.\n"
+          "::: toggle Comps\n| a | b |\n|---|---|\n| 1 | 2 |\n:::\n![chart](upload:abc123)\n"
+          "See the [dashboard](notion:41e25b170278816ca585e60fd34308b4).\n:::")
+    [c] = to_blocks(md)
+    assert c["type"] == "callout" and c["callout"]["color"] == "gray_background"
+    assert c["callout"]["icon"]["emoji"] == "📈"
+    assert c["callout"]["rich_text"][0]["annotations"]["bold"] is True
+    kids = c["callout"]["children"]
+    assert [k["type"] for k in kids] == ["paragraph", "toggle", "image", "paragraph"]
+    red = [r for r in kids[0]["paragraph"]["rich_text"] if r.get("annotations", {}).get("color") == "red"]
+    assert red and red[0]["text"]["content"] == "fell 2%"
+    assert kids[2]["image"]["file_upload"]["id"] == "abc123"
+    assert any(r["type"] == "mention" for r in kids[3]["paragraph"]["rich_text"])
+    assert depth(c) == 4      # callout > toggle > table > rows: too deep for one request
+
+
+def test_append_splits_deep_trees():
+    from market_updater.publish.blocks import to_blocks
+    from market_updater.publish.notion import Notion
+    calls = []
+
+    class Fake(Notion):
+        def __init__(self):
+            self.token, self.ids = "x", {}
+
+        def _req(self, method, path, json=None):
+            calls.append((path, json))
+            return {"results": [{"id": f"b{len(calls)}-{i}"} for i, _ in enumerate((json or {}).get("children", []))]}
+
+    md = "::: callout 📈 gray\nHead\n::: toggle Comps\n| a | b |\n|---|---|\n| 1 | 2 |\n:::\n:::\nAfter"
+    Fake().append("page", to_blocks(md))
+    first = calls[0][1]["children"]
+    assert "children" not in first[0]["callout"] and first[1]["type"] == "paragraph"
+    assert calls[1][0] == "/blocks/b1-0/children"        # the callout's toggle goes in second
+    assert calls[1][1]["children"][0]["toggle"]["children"][0]["type"] == "table"

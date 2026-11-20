@@ -128,7 +128,12 @@ class LLM:
             messages=[{"role": "user", "content": user}],
         )
         self._log_claude(model, resp, purpose)
-        return "".join(getattr(b, "text", "") for b in resp.content)
+        text = "".join(getattr(b, "text", "") for b in resp.content)
+        if getattr(resp, "stop_reason", None) == "max_tokens":
+            from .analysis.checks import trim_incomplete
+            log.warning("%s hit its %d-token limit; trimming the unfinished sentence", purpose, max_tokens)
+            text = trim_incomplete(text)
+        return text
 
     def _log_claude(self, model, resp, purpose) -> None:
         u = resp.usage
@@ -169,7 +174,12 @@ class LLM:
             "model": GROQ_CHAT_MODEL, "max_tokens": max_tokens, "temperature": 0.3,
             "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
         }, purpose)
-        return data["choices"][0]["message"]["content"]
+        choice = data["choices"][0]
+        text = choice["message"]["content"]
+        if choice.get("finish_reason") == "length":
+            from .analysis.checks import trim_incomplete
+            text = trim_incomplete(text)
+        return text
 
 
 class FakeLLM:
