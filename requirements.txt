@@ -11,3 +11,4 @@ yfinance>=0.2.40
 python-dateutil>=2.9
 tzdata
 pytest>=8.0
+matplotlib>=3.8

@@ -21,7 +21,7 @@ schedule:
   market_snapshot_at: "06:15"
   publish_by: "06:45"
   health_check_at: "07:00"
-  friday_deep_dive: true
+  deep_dive_days: [Tue, Wed, Thu, Fri]   # on the previous day's busiest Elsewhere sector
 
 delivery:
   telegram_alerts: failures_only
@@ -39,6 +39,10 @@ notion:
     sources: 41c25b17-0278-81ee-b12f-000b110aec39
     debates: 41c25b17-0278-81b2-b803-000b057ec87d
     settings: 41c25b17-0278-81a4-9827-000b65e53bda
+    reading: 41e25b17-0278-81b3-a773-000becdfc655
+  pages:
+    home: 41c25b17027881f69fa2f1ff7cbc8c1b          # the Market Updater page (the "Today's briefing" box)
+    dashboard: 41e25b170278816ca585e60fd34308b4     # Trade idea dashboard
 
 models:
   # Claude API on the Max plan's $100/month credit (link a Console org in
@@ -60,11 +64,13 @@ trade_ideas:
   min_against_crowded_consensus: 1
   max_per_sector: 2
   legs_from: [watchlists, sector_proxies]
-  min_pair_correlation_1y: 0.5
+  min_pair_correlation_1y: 0.6        # pairs below this are not pitched...
+  fallback_min_correlation_1y: 0.5   # ...unless fewer than 3 ideas pass (conviction is then capped at Medium)
   hedge_ratio: beta_1y_daily
   spread_zscore_window_days: 60
   stop_spread_vol_multiple: 1.5
-  max_holding_trading_days: 20
+  target_spread_vol_multiple: 2.0    # target when the spread is not already well below its 60-day mean
+  max_holding_trading_days: 20       # the horizon of every idea
   label: "Idea for research, not advice"
   comps:
     peers_per_idea: [3, 4]          # plus both legs; same subsector, from watch lists
@@ -87,14 +93,10 @@ earnings:
   compare_with_previous_call: true
 
 budget:
-  target_words: [2500, 3200]   # about 11–14 minutes
+  target_words: [1500, 2200]   # about 7–10 minutes, plus the reading pages
   words_per_section:
-    top_line: 150
-    market_overview: 500
-    core_sector: 450           # each of the four core sectors
-    elsewhere: 200
-    views_diverge: 450
-    friday_deep_dive: 700
+    core_sector: 70            # the two or three lines per core sector in the briefing
+    deep_dive: 600             # Tuesday to Friday, on the previous day's busiest Elsewhere sector
 
 thresholds:
   elsewhere_sector_move_pct: 2.0

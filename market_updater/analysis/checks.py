@@ -121,3 +121,64 @@ def link_citations(markdown: str, claims: dict[int, dict]) -> str:
             return ""
         return f"[↗]({c['url']})"
     return CITE.sub(repl, markdown)
+
+
+# Phrases a model uses when it talks about its inputs instead of the market. Sentences that
+# contain them are dropped: the reader never sees "claims", "the data supplied" and so on.
+META = re.compile(
+    r"\b(?:the |these |no )?(?:claims?|sources?|data|material|inputs?|tables?)\s+(?:supplied|provided|given|"
+    r"available|above|below)\b(?!\s+by\b)|\bclaims? (?:do|does|did) not\b|\bnot (?:covered|mentioned) in the "
+    r"(?:claims|sources|data)\b|\bas an ai\b|\bI (?:don't|do not|cannot|can't) (?:see|find)\b", re.I)
+
+
+def tidy(markdown: str) -> str:
+    """Final clean-up of drafted text.
+
+    - drops sentences that describe the model's inputs ("the claims supplied do not explain...")
+    - removes half-written citation codes such as "[c402" left by a cut-off answer
+    - fixes " ." and double spaces, and capitalises the first letter of each line
+    - removes a heading that repeats the one before it
+    """
+    out: list[str] = []
+    last_heading = None
+    for line in markdown.splitlines():
+        s = line.rstrip()
+        if s.lstrip().startswith("|") or not s.strip():
+            out.append(s)
+            continue
+        if s.lstrip().startswith("#"):
+            key = s.strip("# ").lower()
+            if key == last_heading:
+                continue
+            last_heading = key
+            out.append(s)
+            continue
+        last_heading = None
+        sents = SENT_SPLIT.split(s)
+        sents = [x for x in sents if not META.search(x)]
+        s = " ".join(sents)
+        s = re.sub(r"\[c\d*$", "", s)
+        s = re.sub(r"\[c\d+(?=[^\d\]]|$)", "", s)
+        s = re.sub(r"\s+([.,;:!?])", r"\1", s)
+        s = re.sub(r"(?<=\S) {2,}", " ", s).rstrip()
+        m = re.match(r"^(\s*(?:[-*] |\d+[.)] |> )?(?:\*\*[^*]+\*\*:?\s*)?)([a-z])", s)
+        if m:
+            s = s[:m.end(1)] + m.group(2).upper() + s[m.end():]
+        if s.strip() and s.strip() not in ("-", "*"):
+            out.append(s)
+    return "\n".join(out).strip()
+
+
+def trim_incomplete(text: str) -> str:
+    """For an answer cut off by the token limit: drop the unfinished last sentence."""
+    t = text.rstrip()
+    if not t or t[-1] in ".!?)|:*_\"'”’>" or re.search(r"\]\([^)]*\)$", t) or t.endswith(":::"):
+        return t
+    lines = t.splitlines()
+    last = lines[-1]
+    cut = max(last.rfind(". "), last.rfind("! "), last.rfind("? "), last.rfind(".)"))
+    if cut > 0:
+        lines[-1] = last[:cut + 1]
+    else:
+        lines.pop()
+    return "\n".join(lines).rstrip()

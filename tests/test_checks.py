@@ -36,3 +36,14 @@ def test_draft_number_cannot_be_rounded_to_match():
     assert clean == ""
     clean, _ = check_section("It rose 4.1% today.", {}, {"4.12%"})
     assert "4.1%" in clean
+
+
+def test_tidy_and_trim():
+    from market_updater.analysis.checks import tidy, trim_incomplete
+    t = "### Views\n### Views\n- oil fell 4% [c12]. The claims supplied do not explain the move. See [c402\n- Gains .  More"
+    out = tidy(t)
+    assert out.count("### Views") == 1 and "claims supplied" not in out and "[c402" not in out
+    assert "- Oil fell 4% [c12]." in out and "Gains. More" in out
+    assert tidy("Worth watching") == "Worth watching"
+    assert trim_incomplete("One full sentence. And then the model hit its") == "One full sentence."
+    assert tidy("Data provided by the ONS showed growth.") == "Data provided by the ONS showed growth."

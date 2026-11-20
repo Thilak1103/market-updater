@@ -64,31 +64,51 @@ def fake_responder(purpose: str, system: str, user: str):
                            "numbers": []})
         return {"claims": claims}
     if purpose == "trade_ideas":
+        def idea(long, short, sector, **kw):
+            base = {"long": long, "short": short, "long_name": f"{long} Corp", "short_name": f"{short} Corp",
+                    "sector": sector, "origin": "Divergence", "headline": "Share gains are not priced",
+                    "what_it_is": "A bet that the long gains share from the short.",
+                    "long_case": "Capex is still rising [c1].", "short_case": "Its margins are under pressure.",
+                    "wrong_if": "Hyperscalers cut capex guidance.", "against_consensus": True,
+                    "conviction": "Medium", "conviction_reason": "the evidence is one-sided", "peers": ["AVGO", "TSM"]}
+            base.update(kw)
+            return base
         return {"ideas": [
-            {"long": "NVDA", "short": "AMD", "sector": "tmt", "origin": "Divergence",
-             "headline": "Long Nvidia / short AMD: share gains not priced",
-             "isolates": "Nvidia's lead in accelerators.", "thesis": "Capex is still rising [c1].",
-             "why_now": "The crowd is bearish on capex returns [c1].",
-             "consensus": "Most voices are bearish; this is against them.", "against_consensus": True,
-             "wrong_if": "Hyperscalers cut capex guidance.", "confidence": "Medium",
-             "confidence_reason": "Pair is well correlated.", "peers": ["AVGO", "TSM"]},
-            {"long": "JPM", "short": "BAC", "sector": "financials", "origin": "Sector move",
-             "headline": "Long JPMorgan / short Bank of America", "isolates": "Fee income versus rate sensitivity.",
-             "thesis": "Rates are falling, which hurts the more rate-sensitive bank.", "why_now": "Rates rallied.",
-             "consensus": "With consensus.", "against_consensus": False, "wrong_if": "Rates rise.",
-             "confidence": "Low", "peers": ["GS", "MS", "NOTREAL"]},
-            {"long": "NVDA", "short": "NVDA", "sector": "tmt", "origin": "Divergence", "headline": "Bad",
-             "isolates": "", "thesis": "", "why_now": "", "consensus": "", "against_consensus": False,
-             "wrong_if": "", "confidence": "Low", "peers": []},
+            idea("NVDA", "AMD", "tmt", long_name="Nvidia", short_name="AMD"),
+            idea("JPM", "BAC", "financials", against_consensus=False, conviction="Low",
+                 long_case="Fee income rose 12.34% this quarter.", peers=["GS", "MS", "NOTREAL"]),
+            idea("NVDA", "NVDA", "tmt", headline="Bad"),
+            idea("AMD", "MU", "tmt"),                  # reuses a leg already taken: rejected
+            idea("TSCO.L", "SBRY.L", "staples_retail", long_name="Tesco", short_name="Sainsbury's"),
+            idea("GS", "MS", "financials", long_name="Goldman Sachs", short_name="Morgan Stanley",
+                 peers=["JPM", "TSCO.L"]),
         ]}
     if purpose.startswith("earnings_"):
         return {"verdict": "Shares moved more than usual; the call was better than that.",
                 "reaction_fit": "overdone", "review": "- **Market reaction** Bigger than the usual move.\n- **Does the reaction fit?** No."}
     if purpose == "discovery_score":
         return {"scores": []}
-    if purpose == "write_topline":
-        return "- Capex worries are building [c1].\n- Made-up number 97.3% with no source."
+    if purpose == "write_market_story":
+        rows = re.findall(r"^- ([^:]+): ", user.split("Full market table")[0], re.M)
+        return {"headline": "Risk-off day, led by the AI trade.", "mood": "risk_off",
+                "bullets": [{"lead": "Why AI sold off", "text": "Capex worries are building [c1]."},
+                            {"lead": "Made up", "text": "Made-up number 97.3% with no source."},
+                            {"lead": "Meta", "text": "The claims supplied do not explain the move."}],
+                "so_what": {r: "worth watching" for r in rows}}
+    if purpose.startswith("write_") and purpose in ("write_tmt", "write_autos", "write_staples_retail",
+                                                    "write_financials"):
+        return {"blurb": "Voices are turning bearish on AI spending [c1]. A sentence citing a missing claim [c99999]. "
+                         "Something rose 12.34% today without any source.",
+                "reading": [{"item": 1, "summary": "Argues capex is outrunning revenue [c1]."}],
+                "filtered": "generic stock-tip pieces"}
+    if purpose == "write_elsewhere":
+        return {"rows": [{"sector": "Energy", "why": "Oil supply news moved the group [c3]."}]}
+    if purpose == "write_consensus":
+        return {"rows": []}
+    if purpose == "write_deep_dive":
+        return ("**Supply news is driving energy.**\n### What happened\n- Oil supply news [c3].\n"
+                "### Why it is happening\n- Producers are adding supply [c3].\n- The claims provided do not say more.\n"
+                "### What to watch\n- The next OPEC meeting")
     if purpose.startswith("write_"):
-        return ("Voices are turning bearish on AI spending [c1]. A sentence citing a missing claim [c99999].\n"
-                "- Something rose 12.34% today without any source.")
+        return "Voices are turning bearish on AI spending [c1]."
     raise AssertionError(f"unexpected purpose {purpose}")

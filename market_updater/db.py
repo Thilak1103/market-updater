@@ -117,7 +117,23 @@ class DB:
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.executescript(SCHEMA)
+        self._migrate()
         self.conn.commit()
+
+    # Columns added after the first release; ALTER TABLE is a no-op if they already exist.
+    MIGRATIONS = {
+        "ideas": [("headline", "TEXT"), ("target_spread", "REAL"), ("target_return", "REAL"),
+                  ("stop_return", "REAL"), ("horizon_end", "TEXT"), ("following", "INTEGER DEFAULT 0"),
+                  ("best", "REAL"), ("worst", "REAL"), ("outcome", "TEXT DEFAULT 'Open'"),
+                  ("briefing_url", "TEXT"), ("spec", "TEXT")],
+    }
+
+    def _migrate(self) -> None:
+        for table, cols in self.MIGRATIONS.items():
+            have = {r[1] for r in self.conn.execute(f"PRAGMA table_info({table})")}
+            for name, kind in cols:
+                if name not in have:
+                    self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {kind}")
 
     @contextmanager
     def tx(self) -> Iterator[sqlite3.Connection]:
@@ -179,7 +195,8 @@ class DB:
 
     def claims_since(self, since: datetime) -> list[sqlite3.Row]:
         return self.q(
-            "SELECT c.*, i.url, i.title AS item_title, i.source_name, i.published, i.is_subscriber, i.repeat_of "
+            "SELECT c.*, i.url, i.title AS item_title, i.source_name, i.source_type, i.kind AS item_kind, i.published, "
+            "i.is_subscriber, i.repeat_of "
             "FROM claims c JOIN items i ON i.id=c.item_id WHERE c.created>=? OR i.published>=? ORDER BY c.id",
             (since.astimezone(timezone.utc).replace(tzinfo=None).isoformat(timespec="seconds"),
              since.astimezone(timezone.utc).isoformat(timespec="seconds")))

@@ -121,42 +121,46 @@ def daily(*, dry_run: bool = False, settings: Settings | None = None, db: DB | N
         if rv:
             reviews.append(rv)
 
-    # 5. Trade ideas
+    # 5. Trade ideas: pick up what the reader ticked in Notion, mark open ideas, pitch new ones
+    from .publish import pages as PG
+    if notion is not None and not dry_run:
+        _step("sync following", problems, PG.sync_following, notion, db)
     idea_updates = _step("idea updates", problems, I.update_open, db, prices, settings, day, default=[]) or []
     ideas = _step("trade ideas", problems, I.generate, settings, db, llm, prices, states, claims, reports, snap,
-                  default=[]) or []
-    if not dry_run:
-        _step("save ideas", problems, I.save, db, ideas, day)
+                  day, default=[]) or []
 
-    # 6. Sections
-    secs: list[S.Section] = []
-    ov = _step("overview", problems, S.overview, llm, settings, snap, claims, _words(settings, "market_overview", 500))
+    # 6. Writing
+    story = _step("top line", problems, S.market_story, llm, settings, snap, claims)
     core = [_step(f"sector {s.key}", problems, S.sector_section, llm, settings, s, snap, claims,
-                  _words(settings, "core_sector", 450)) for s in settings.core_sectors]
-    els = _step("elsewhere", problems, S.elsewhere_section, llm, settings, snap, claims, _words(settings, "elsewhere", 200))
-    div = _step("diverge", problems, S.diverge_section, llm, settings, states, claims_by_id, snap,
-                _words(settings, "views_diverge", 450))
+                  _words(settings, "core_sector", 70)) for s in settings.core_sectors]
+    els = _step("elsewhere", problems, S.elsewhere_section, llm, settings, snap, claims)
+    cons = _step("consensus check", problems, S.consensus_section, llm, settings, states, claims_by_id, snap)
     deep = None
-    if is_friday(day):
-        ranked = db.q("SELECT sector, COUNT(*) n, SUM(magnitude) m FROM elsewhere_log WHERE date>=? "
-                      "GROUP BY sector ORDER BY n DESC, m DESC LIMIT 3", ((day - timedelta(days=6)).isoformat(),))
-        week = [X.claim_dict(c) for c in db.claims_since(now - timedelta(days=7))] if ranked else []
-        for top in ranked:   # the most-triggered sector with enough material to write about
-            deep = _step("deep dive", problems, S.deep_dive, llm, settings, top["sector"], snap, week,
-                         _words(settings, "friday_deep_dive", 700))
-            if deep:
-                break
-    for s in [ov, *core, els, div, deep]:
-        if s:
-            secs.append(s)
-            problems += [f"{s.title}: {p}" for p in s.problems]
-    top_line = _step("top line", problems, S.topline, llm, secs, claims_by_id, snap)
+    if day.weekday() in (1, 2, 3, 4):       # Tuesday to Friday: yesterday's busiest Elsewhere sector
+        deep = _step("deep dive", problems, _deep_dive, settings, db, llm, snap, day, now)
+    for part in [story, *core, els, cons, deep, *ideas, *reviews]:
+        if part is not None and getattr(part, "problems", None):
+            title = getattr(part, "title", None) or getattr(getattr(part, "sector", None), "name", None) or "part"
+            problems += [f"{title}: {p}" for p in part.problems[:10]]
 
-    # 7. Assemble
-    md, cited = assemble(settings, day, snap, top_line, ov, ideas, idea_updates, core, reviews, els, div, deep,
-                         db, claims_by_id, now, pending)
-    failed_core = sum(1 for s in core if not s or "Not available today" in s.markdown)
-    status = "Published" if failed_core == 0 and top_line else "Partial"
+    # 7. Reading pages and charts (need Notion), then assemble
+    names = F.company_names(db, sorted({r["ticker"] for rows in snap.sector_rows.values() for r in rows}))
+    if notion is not None and not dry_run:
+        for out in core:
+            if out:
+                out.reading_url = _step(f"reading {out.sector.key}", problems, PG.publish_reading, notion, day,
+                                        out, S.reading_markdown(out, snap, names), claims_by_id)
+        for idea in ideas:
+            up = notion.upload_file(idea.chart, f"spread-{idea.spec['long']}-{idea.spec['short']}.png") if idea.chart else None
+            idea.markdown = idea.markdown.replace(
+                "{{chart}}", f"![The hedged spread over the last year, with entry, target and stop](upload:{up})" if up else "")
+    for idea in ideas:
+        idea.markdown = idea.markdown.replace("{{chart}}", "")
+    dash = (settings.get("notion.pages", {}) or {}).get("dashboard")
+    md, cited = assemble(settings, day, snap, story, ideas, idea_updates, core, reviews, els, cons, deep,
+                         db, claims_by_id, pending, dash)
+    failed_core = sum(1 for s in core if not s or not s.blurb)
+    status = "Published" if failed_core == 0 and story else "Partial"
 
     # 8. Publish
     url = None
@@ -164,17 +168,26 @@ def daily(*, dry_run: bool = False, settings: Settings | None = None, db: DB | N
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / f"{day.isoformat()}.md").write_text(md)
     if not dry_run and notion is not None:
-        themes = [d.question for d in states[:3]]
+        themes = [b.split(":**")[0].strip("- *") for b in (story.bullets if story else [])][:5]
         moved = sorted({SECTOR_LABELS.get(t.sector, settings.sector(t.sector).name if settings.sector(t.sector) else t.sector)
                         for t in snap.triggers})
-        from .publish import pages as PG
-        url = _step("publish", problems, PG.publish_briefing, notion, day,
+        res = _step("publish", problems, PG.publish_briefing, notion, day,
                     f"Market briefing {day.strftime('%a %d %b %Y')}", md, status=status, themes=themes,
                     sectors_moved=moved, quiet=not snap.triggers, deep_dive=deep.title if deep else "")
+        url, page_id = res if res else (None, None)
+        _step("save ideas", problems, I.save, db, ideas, day, url)
+        _step("push ideas", problems, PG.push_ideas, notion, db,
+              {u["id"]: f"{u['day']} of {u['max_days']}" for u in idea_updates},
+              {(i.spec["long"], i.spec["short"]): i.chart for i in ideas if i.chart})
         _step("push views", problems, PG.push_views, notion, db)
-        _step("push ideas", problems, PG.push_ideas, notion, db)
         _step("propose debates", problems, PG.propose_debates, notion,
               V.proposed_debates(db, now - timedelta(days=7)), set(settings.debates))
+        if page_id:
+            _step("home page", problems, PG.update_home, notion, settings, day, page_id,
+                  story.headline if story else "")
+            for out in core:
+                if out and out.reading_url:
+                    _step("reading link", problems, PG.link_reading, notion, out.reading_url, url)
         if url is None:
             status = "Failed"
     _record_stories(db, day, claims, cited)
@@ -183,6 +196,26 @@ def daily(*, dry_run: bool = False, settings: Settings | None = None, db: DB | N
         telegram.send(f"Market Updater {day}: {status}. {len(problems)} problem(s). First: "
                       f"{problems[0] if problems else 'n/a'}")
     return RunResult(day, md, status, url, problems, stats)
+
+
+def _deep_dive(settings: Settings, db: DB, llm, snap, day: date, now: datetime):
+    """Tuesday to Friday: the Elsewhere sector that triggered most on the previous trading day."""
+    prev = day - timedelta(days=3 if day.weekday() == 0 else 1)
+    ranked = db.q("SELECT sector, COUNT(*) n, SUM(magnitude) m, GROUP_CONCAT(reason, '; ') why FROM elsewhere_log "
+                  "WHERE date=? GROUP BY sector ORDER BY n DESC, m DESC LIMIT 3", (prev.isoformat(),))
+    if not ranked:
+        log.info("No Elsewhere moves on %s, so no deep dive today", prev)
+        return None
+    recent = [X.claim_dict(c) for c in db.claims_since(now - timedelta(days=4))]
+    for top in ranked:
+        sec = settings.sector(top["sector"])
+        if not sec or sec.core:
+            continue
+        out = S.deep_dive(llm, settings, top["sector"], f"{prev.strftime('%A')}: {top['why']}", snap, recent,
+                          _words(settings, "deep_dive", 600))
+        if out and out.markdown:
+            return out
+    return None
 
 
 def collect_stage(now: datetime | None = None) -> dict:
@@ -203,10 +236,21 @@ def collect_stage(now: datetime | None = None) -> dict:
     return {"problems": problems, **stats}
 
 
-def assemble(settings, day, snap, top_line, ov, ideas, idea_updates, core, reviews, els, div, deep,
-             db, claims_by_id, now: datetime | None = None,
-             pending: list[str] | None = None) -> tuple[str, set[int]]:
-    from .analysis.checks import link_citations
+MOOD = {"risk_off": ("🔴", "red"), "risk_on": ("🟢", "green"), "mixed": ("⚪", "gray")}
+CONSENSUS_PURPOSE = ("*Where the crowd is leaning and whether anyone credible is betting against it: "
+                     "crowded views are where the best contrarian trades come from.*")
+
+
+def _table(head: list[str], rows: list[list[str]]) -> str:
+    clean = [[str(c).replace("|", "/").replace("\n", " ") for c in r] for r in rows]
+    return "\n".join(["| " + " | ".join(head) + " |", "|" + "---|" * len(head)]
+                     + ["| " + " | ".join(r) + " |" for r in clean])
+
+
+def assemble(settings, day, snap, story, ideas, idea_updates, core, reviews, els, cons, deep,
+             db, claims_by_id, pending: list[str] | None = None,
+             dashboard_id: str | None = None) -> tuple[str, set[int]]:
+    from .analysis.checks import link_citations, tidy
 
     parts: list[str] = []
     cited: set[int] = set()
@@ -216,53 +260,82 @@ def assemble(settings, day, snap, top_line, ov, ideas, idea_updates, core, revie
             parts.append(f"## {title}\n{body.strip()}")
             cited.update(ids or set())
 
-    prepared = (now.astimezone(now_london().tzinfo) if now else now_london()).strftime('%H:%M')
-    parts.append(f"*Prepared {prepared} London time. Ideas are for research, "
-                 f"not investment advice. Numbers come from market data feeds; every view links to its source.*")
-    if top_line:
-        add("Top line", top_line.markdown, top_line.cited)
-    ov_body = f"*Markets as of {snap.asof_label}; Asia still trading.*\n{snap.overview_md}\n\n::: toggle Rates, credit and macro data\n{snap.macro_md}\n:::"
-    if ov:
-        ov_body += "\n" + ov.markdown
-    add("Market overview", ov_body, ov.cited if ov else set())
-    idea_md = "\n\n".join(i.markdown for i in ideas)
-    if idea_updates:
-        idea_md += "\n\n**Open ideas**\n" + "\n".join(idea_updates)
-    add("Trade ideas", idea_md or "- No idea passed the checks today.", {c for i in ideas for c in i.cited})
-    for sec, s in zip(settings.core_sectors, core):
-        body = f"::: toggle Moves\n{snap.sector_tables.get(sec.key, '')}\n:::\n" + (s.markdown if s else "- Not available today.")
-        add(sec.name, body, s.cited if s else set())
+    # Top line
+    if story:
+        icon, color = MOOD.get(story.mood, MOOD["mixed"])
+        moves = S.headline_moves(snap)
+        body = [f"::: callout {icon} {color}", f"**{story.headline}** {moves}".strip(), ":::"] + story.bullets
+        add("☀️ Top line", "\n".join(body), story.cited)
+    elif snap.key_rows:
+        add("☀️ Top line", f"::: callout ⚪ gray\n{S.headline_moves(snap)}\n:::")
+
+    # The numbers that matter
+    if snap.key_rows:
+        so = story.so_what if story else {}
+        rows = [[r["name"], r["level"], r["move"], so.get(r["name"], "")] for r in snap.key_rows]
+        add("📊 The numbers that matter", _table(["What", "Level", "Move", "So what"], rows))
+
+    # Trade ideas
+    idea_md = "\n".join(i.markdown for i in ideas)
+    if len(ideas) < 3:
+        idea_md += (f"\n*Only {len(ideas)} idea{'s' if len(ideas) != 1 else ''} passed today's checks "
+                    "(a well-correlated pair and a case for both legs).*")
+    follow = I.following_markdown(idea_updates, dashboard_id)
+    add("🎯 Trade ideas", "\n".join(x for x in (idea_md, follow) if x.strip()),
+        {c for i in ideas for c in i.cited})
+
+    # Core sectors
+    blocks = []
+    for out in core:
+        if not out:
+            continue
+        icon = S.ICONS.get(out.sector.key, "📌")
+        more = f" Read more → [{out.sector.name} reading](notion:{_page_id(out.reading_url)})" if out.reading_url else ""
+        blocks += [f"::: callout {icon} blue", f"**{out.sector.name}** — {out.blurb or 'A quiet day.'}{more}", ":::"]
+        cited.update(out.cited)
+    add("🏭 Your sectors", "\n".join(blocks))
+
+    # Earnings
     if reviews or pending:
-        body = "\n".join(f"**{r.ticker}:** {r.verdict}\n::: toggle Full review: {r.ticker}\n{r.markdown}\n:::"
+        body = "\n".join(f"**{r.ticker}:** {tidy(r.verdict)}\n::: toggle Full review: {r.ticker}\n{tidy(r.markdown)}\n:::"
                          for r in reviews)
         if pending:
-            body += (f"\n*Reported, reaction still to come (reviewed tomorrow): {', '.join(pending)}.*")
-        add("Earnings reviews", body, {c for r in reviews for c in r.cited})
-    if els:
-        add("Elsewhere", els.markdown, els.cited)
-    if div:
-        add("Where views diverge", div.markdown, div.cited)
-    if deep:
-        add(deep.title, deep.markdown, deep.cited)
+            body += f"\n*Reported, reaction still to come (reviewed tomorrow): {', '.join(pending)}.*"
+        add("📅 Earnings reviews", body, {c for r in reviews for c in r.cited})
+
+    # Elsewhere
+    if els and els.rows:
+        add("🌍 Elsewhere", _table(["Sector", "Move", "What's behind it"],
+                                   [[r["sector"], r["move"], r["why"]] for r in els.rows]), els.cited)
+
+    # Consensus check
+    if cons and cons.rows:
+        add("🧭 Consensus check", CONSENSUS_PURPOSE + "\n" + _table(
+            ["Debate", "Crowd", "Change", "Worth noting"],
+            [[r["debate"], r["crowd"], r["change"], r["note"]] for r in cons.rows]), cons.cited)
+
+    # Deep dive
+    if deep and deep.markdown:
+        add(f"🔍 {deep.title}", deep.markdown, deep.cited)
+
+    # Friday scorecard
     if is_friday(day):
-        add("Trade idea scorecard", I.scorecard(db, (day - timedelta(days=6)).isoformat()))
-        add("Source health", source_health(settings, db))
-    # Sources list
-    src_lines = []
-    for cid in sorted(cited):
-        c = claims_by_id.get(cid)
-        if c and str(c.get("url", "")).startswith("http"):
-            src_lines.append(f"- [{c.get('item_title') or c.get('source_name')}]({c['url']}) "
-                             f"({c.get('source_name')})")
-    seen, uniq = set(), []
-    for l in src_lines:
-        if l not in seen:
-            seen.add(l)
-            uniq.append(l)
-    if uniq:
-        add("Sources", "::: toggle All sources used\n" + "\n".join(uniq) + "\n:::")
+        add("🏁 Trade idea scorecard", I.scorecard(db))
+
+    # Footer: links to the reading pages
+    links = [f"{S.ICONS.get(o.sector.key, '')} [{o.sector.name}](notion:{_page_id(o.reading_url)})"
+             for o in core if o and o.reading_url]
+    if links:
+        parts.append("---\n**Read more by sector:** " + " · ".join(links))
     md = link_citations("\n\n".join(parts), claims_by_id)
     return md, cited
+
+
+def _page_id(url: str | None) -> str:
+    """The 32-character id at the end of a Notion URL."""
+    import re as _re
+    m = _re.search(r"([0-9a-f]{32})(?:\?|$)", (url or "").replace("-", ""))
+    return m.group(1) if m else (url or "")
 
 
 def source_health(settings: Settings, db: DB) -> str:

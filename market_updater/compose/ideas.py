@@ -1,11 +1,24 @@
-"""Trade ideas: candidates from Claude Opus, statistics and comps from code, tracking in SQLite/Notion."""
+"""Trade ideas: a statistical shortlist from code, the pitch from Claude Opus, comps, targets,
+charts and day-by-day tracking in SQLite and Notion.
+
+Every idea has a target, a stop and a horizon, set in code from the pair's spread:
+- spread = ln(long) - beta x ln(short), beta from a year of daily returns;
+- stop: the spread falls a further `stop_spread_vol_multiple` (1.5) x its 60-day volatility;
+- target: back to its 60-day average if it sits well below it, otherwise up by
+  `target_spread_vol_multiple` (2) x its 60-day volatility;
+- horizon: `max_holding_trading_days` (20) trading days.
+"""
 from __future__ import annotations
 
+import io
+import itertools
 import json
+import math
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date
 
-from ..analysis.checks import check_section
+import numpy as np
+
 from ..analysis.views import DebateState
 from ..db import DB
 from ..llm import LLMUnavailable
@@ -17,7 +30,9 @@ from ..market.snapshot import Snapshot
 from ..settings import Settings
 from ..util import log
 from . import prompts as P
-from .sections import claim_line, select
+from .sections import claim_line, clean, select
+
+CONVICTION_COLOR = {"High": "green", "Medium": "orange", "Low": "gray"}
 
 
 @dataclass
@@ -28,6 +43,14 @@ class Idea:
     markdown: str = ""
     problems: list[str] = field(default_factory=list)
     cited: set[int] = field(default_factory=set)
+    target_spread: float = 0.0
+    target_return: float = 0.0
+    stop_return: float = 0.0
+    horizon_end: str = ""
+    target_label: str = ""
+    chart: bytes | None = None
+    texts: dict = field(default_factory=dict)
+    pitch: str = ""            # the markdown before the briefing's chart is put in
 
 
 def universe(settings: Settings) -> dict[str, str]:
@@ -44,182 +67,354 @@ def open_ideas(db: DB) -> list[dict]:
     return [dict(r) for r in db.q("SELECT * FROM ideas WHERE status='Open'")]
 
 
-def update_open(db: DB, prices: Prices, settings: Settings, today: date) -> list[str]:
-    """Mark open ideas to market; close on stop, expiry. Returns one-line updates."""
-    max_days = int(settings.get("trade_ideas.max_holding_trading_days", 20))
-    lines = []
+# -- targets and tracking ---------------------------------------------------------
+
+def plan(st: PairStats, cfg: dict, today: date) -> tuple[float, float, float, str, str]:
+    """(target spread, target return, stop return, horizon end ISO, target label)."""
+    t_mult = float(cfg.get("target_spread_vol_multiple", 2.0))
+    s_mult = float(cfg.get("stop_spread_vol_multiple", 1.5))
+    days = int(cfg.get("max_holding_trading_days", 20))
+    std = st.spread_std_60 or 1e-6
+    if st.zscore_60 <= -0.75 and st.spread_mean_60 - st.spread_now >= std:
+        target = st.spread_mean_60
+        label = f"spread back to its 60-day average (now {abs(st.zscore_60):.1f} standard deviations below it)"
+    else:
+        target = st.spread_now + t_mult * std
+        label = f"spread widens {t_mult:g}× its 60-day volatility in the long's favour"
+    target_ret = math.exp(target - st.spread_now) - 1
+    stop_ret = math.exp(-s_mult * std) - 1
+    end = np.busday_offset(np.datetime64(today.isoformat()), days, roll="forward")
+    return target, target_ret, stop_ret, str(end), label
+
+
+def update_open(db: DB, prices: Prices, settings: Settings, today: date) -> list[dict]:
+    """Mark open ideas to market; close on target, stop or expiry. Returns one dict per idea."""
+    cfg = settings.get("trade_ideas", {}) or {}
+    max_days = int(cfg.get("max_holding_trading_days", 20))
+    t_mult = float(cfg.get("target_spread_vol_multiple", 2.0))
+    out = []
     for idea in open_ideas(db):
         ql, qs = prices.quote(idea["long"]), prices.quote(idea["short"])
         if not ql or not qs:
             continue
-        pnl = pair_pnl(idea["entry_long"], idea["entry_short"], idea["hedge_ratio"], ql.last, qs.last)
-        status, reason = "Open", None
+        beta = idea["hedge_ratio"]
+        pnl = pair_pnl(idea["entry_long"], idea["entry_short"], beta, ql.last, qs.last)
+        target_spread = idea.get("target_spread")
+        target_ret = idea.get("target_return")
+        if target_spread is None:          # ideas opened before targets existed
+            target_spread = idea["entry_spread"] + t_mult * (idea["spread_std"] or 0)
+            target_ret = math.exp(target_spread - idea["entry_spread"]) - 1
+        spread = math.log(ql.last) - beta * math.log(qs.last)
         held = len(prices.frame.loc[prices.frame.index > idea["created"][:10]]) if not prices.frame.empty else 0
-        if stopped(idea["hedge_ratio"], idea["stop_spread"], ql.last, qs.last):
-            status, reason = "Stopped out", "spread hit the stop"
+        best = max(idea.get("best") or 0.0, pnl)
+        worst = min(idea.get("worst") or 0.0, pnl)
+        status, outcome, reason = "Open", "Open", None
+        if spread >= target_spread:
+            status, outcome, reason = "Closed", "Hit target", "the spread reached its target"
+        elif stopped(beta, idea["stop_spread"], ql.last, qs.last):
+            status, outcome, reason = "Stopped out", "Stopped out", "the spread hit the stop"
         elif held >= max_days:
-            status, reason = "Expired", f"{max_days} trading days elapsed"
-        db.ex("UPDATE ideas SET pnl=?, status=?, closed=?, close_reason=? WHERE id=?",
-              (pnl, status, today.isoformat() if status != "Open" else None, reason, idea["id"]))
-        tag = f" ({status.lower()}: {reason})" if reason else ""
-        lines.append(f"- Long {idea['long']} / short {idea['short']}: {pnl * 100:+.1f}% hedged since "
-                     f"{idea['created'][:10]}{tag}")
-    return lines
+            status, outcome = "Expired", "Expired up" if pnl > 0 else "Expired down"
+            reason = f"{max_days} trading days elapsed"
+        db.ex("UPDATE ideas SET pnl=?, status=?, outcome=?, closed=?, close_reason=?, best=?, worst=?, "
+              "target_spread=?, target_return=? WHERE id=?",
+              (pnl, status, outcome, today.isoformat() if status != "Open" else None, reason, best, worst,
+               target_spread, target_ret, idea["id"]))
+        out.append({"id": idea["id"], "long": idea["long"], "short": idea["short"], "pnl": pnl, "status": status,
+                    "outcome": outcome, "reason": reason, "day": min(held, max_days), "max_days": max_days,
+                    "progress": (pnl / target_ret) if target_ret else None, "following": bool(idea.get("following")),
+                    "headline": idea.get("headline")})
+    return out
+
+
+def following_markdown(updates: list[dict], dashboard_id: str | None) -> str:
+    """The yellow 'Ideas you're following' callout (empty string if nothing is followed)."""
+    mine = [u for u in updates if u["following"]]
+    if not mine:
+        return ""
+    bits = []
+    for u in mine:
+        pnl = f"{u['pnl'] * 100:+.1f}%".replace("-", "−")
+        col = "green" if u["pnl"] > 0 else "red" if u["pnl"] < 0 else "gray"
+        state = (f"day {u['day']} of {u['max_days']}" if u["status"] == "Open"
+                 else f"closed: {u['outcome'].lower()}")
+        prog = f", {max(0, u['progress']) * 100:.0f}% of the way to target" if u["progress"] and u["status"] == "Open" else ""
+        bits.append(f"Long {u['long']} / short {u['short']} <span color=\"{col}\">{pnl}</span> ({state}{prog})")
+    link = f" Full tracker: [Trade idea dashboard](notion:{dashboard_id})." if dashboard_id else ""
+    return "\n".join(["::: callout ⭐ yellow", "**Ideas you're following:** " + " · ".join(bits) + "." + link, ":::"])
+
+
+# -- the shortlist -----------------------------------------------------------------
+
+def shortlist(settings: Settings, prices: Prices, uni: dict[str, str], min_corr: float,
+              exclude: set[str], limit: int = 45) -> list[PairStats]:
+    """Well-correlated pairs within each sector (watch-list names and the sector's ETFs)."""
+    out: list[PairStats] = []
+    frame = prices.frame
+    by_sector: dict[str, list[str]] = {}
+    for t, s in uni.items():
+        if t in frame.columns and not t.startswith("^") and t not in exclude:
+            by_sector.setdefault(s, []).append(t)
+    for sec, tickers in by_sector.items():
+        for a, b in itertools.combinations(sorted(tickers), 2):
+            st = pair_stats(frame, a, b)
+            if st and st.corr >= min_corr:
+                out.append(st)
+    # Most interesting first: stretched spreads, then tight relationships.
+    out.sort(key=lambda s: (-abs(s.zscore_60), -s.corr))
+    return out[:limit]
 
 
 def _context(settings: Settings, states: list[DebateState], claims: list[dict], reports: list,
              snap: Snapshot) -> tuple[str, dict[int, dict]]:
     people = settings.people
     idea_sources = {s.name.lower() for s in settings.sources if s.ideas or s.contrarian}
-    pitches = [c for c in claims if (c.get("source_name") or "").lower() in idea_sources
-               and c.get("tickers")]
-    chosen = select(claims, people, limit=80)
+    pitches = [c for c in claims if (c.get("source_name") or "").lower() in idea_sources and c.get("tickers")]
+    chosen = select(claims, people, limit=90)
     chosen += [c for c in pitches if c not in chosen][:30]
     blocks = []
     for s in states[:8]:
         blocks.append(f"Debate {s.key} ({s.question}): majority {s.majority} {int(s.share * 100)}%, "
                       f"crowded={s.crowded}, cracking={s.cracking}, dissenters="
                       f"{[d['speaker'] for d in s.dissenters]}, changed={[d['speaker'] for d in s.changed]}")
-    rep_lines = []
-    for r in reports:
-        rep_lines.append(f"{r.ticker}: move {r.move_pct}, sector {r.sector_move_pct}, usual abs move "
-                         f"{r.avg_abs_move_pct}, reaction_fit={getattr(r, 'reaction_fit', None)}")
+    rep_lines = [f"{r.ticker}: move {r.move_pct}, sector {r.sector_move_pct}, usual abs move "
+                 f"{r.avg_abs_move_pct}, reaction_fit={getattr(r, 'reaction_fit', None)}" for r in reports]
     trig = [f"{t.sector}: {t.reason}" for t in snap.triggers]
     text = ("Debates:\n" + "\n".join(blocks) + "\n\nEarnings reactions:\n" + "\n".join(rep_lines)
             + "\n\nSector and stock triggers:\n" + "\n".join(trig)
-            + "\n\nClaims:\n" + "\n".join(claim_line(c, people) for c in chosen))
+            + "\n\nMaterial:\n" + "\n".join(claim_line(c, people) for c in chosen))
     return text, {c["id"]: c for c in chosen}
 
 
+def _ask(llm, system: str, user: str) -> list[dict]:
+    try:
+        res = llm.json(tier="trade_ideas", purpose="trade_ideas", system=system, user=user,
+                       schema=P.IDEAS_SCHEMA, max_tokens=8000)
+        return res.get("ideas", []) or []
+    except (LLMUnavailable, ValueError) as e:
+        log.warning("Trade-idea call failed: %s", e)
+        return []
+
+
 def generate(settings: Settings, db: DB, llm, prices: Prices, states: list[DebateState],
-             claims: list[dict], reports: list, snap: Snapshot) -> list[Idea]:
+             claims: list[dict], reports: list, snap: Snapshot, today: date | None = None) -> list[Idea]:
+    today = today or date.today()
     cfg = settings.get("trade_ideas", {}) or {}
     n_lo, n_hi = (cfg.get("per_day") or [3, 4])
-    min_corr = float(cfg.get("min_pair_correlation_1y", 0.5))
+    min_corr = float(cfg.get("min_pair_correlation_1y", 0.6))
+    floor_corr = float(cfg.get("fallback_min_correlation_1y", 0.5))
     stop_mult = float(cfg.get("stop_spread_vol_multiple", 1.5))
     min_against = int(cfg.get("min_against_crowded_consensus", 1))
     max_sector = int(cfg.get("max_per_sector", 2))
     uni = universe(settings)
-    open_pairs = {(i["long"], i["short"]) for i in open_ideas(db)}
+    opened = open_ideas(db)
+    open_pairs = {(i["long"], i["short"]) for i in opened}
+    pairs = shortlist(settings, prices, uni, min_corr, set())
+    pair_txt = "\n".join(f"- {p.long} / {p.short} ({uni.get(p.long)}): corr {p.corr:.2f}; spread z-score "
+                         f"{p.zscore_60:+.1f} for long {p.long} / short {p.short} (reverse the sign for the "
+                         f"opposite trade)" for p in pairs) or "(none passed today)"
     ctx, claims_by_id = _context(settings, states, claims, reports, snap)
-    user = (f"Universe (ticker: sector): {json.dumps(uni)}\n\nOpen ideas (do not repeat): "
-            f"{sorted(open_pairs)}\n\n{ctx}")
+    user = (f"Universe (ticker: sector): {json.dumps(uni)}\n\nPre-screened pairs:\n{pair_txt}\n\n"
+            f"Open ideas (do not repeat): {sorted(open_pairs)}\n\n{ctx}")
     system = P.IDEAS_SYSTEM.format(min_against=min_against, n_candidates=8, n_final=n_hi)
-    try:
-        res = llm.json(tier="trade_ideas", purpose="trade_ideas", system=system, user=user,
-                       schema=P.IDEAS_SCHEMA, max_tokens=6000)
-    except LLMUnavailable as e:
-        log.warning("No trade ideas today: %s", e)
-        return []
+
     picked: list[Idea] = []
+    rejected: list[str] = []
+    used: set[str] = set()
     per_sector: dict[str, int] = {}
-    for spec in res.get("ideas", []):
-        lg, sh = spec.get("long"), spec.get("short")
-        if lg not in uni or sh not in uni or lg == sh or (lg, sh) in open_pairs:
-            continue
-        st = pair_stats(prices.frame, lg, sh, stop_mult=stop_mult)
-        if not st or st.corr < min_corr:
-            log.info("Rejected %s/%s: correlation %s", lg, sh, st.corr if st else "n/a")
-            continue
-        sec = uni.get(lg, spec.get("sector", ""))
-        if per_sector.get(sec, 0) >= max_sector:
-            continue
-        picked.append(Idea(spec, st, {}))
-        per_sector[sec] = per_sector.get(sec, 0) + 1
-    # enforce the against-consensus minimum within the final selection
-    final = picked[:n_hi]
-    if min_against and not any(i.spec.get("against_consensus") for i in final):
-        contra = next((i for i in picked[n_hi:] if i.spec.get("against_consensus")), None)
-        if contra and final:
-            final[-1] = contra
-    if len(final) < n_lo:
-        log.info("Only %d ideas passed the checks today", len(final))
-    for idea in final:
-        _finish(idea, settings, db, prices, uni, claims_by_id, snap)
-    return final
+
+    def consider(specs: list[dict], corr_floor: float, sector_cap: int) -> None:
+        for spec in specs:
+            if len(picked) >= n_hi:
+                return
+            lg, sh = spec.get("long"), spec.get("short")
+            if lg not in uni or sh not in uni or lg == sh or (lg, sh) in open_pairs:
+                rejected.append(f"{lg}/{sh}: not in the universe or already open")
+                continue
+            if lg in used or sh in used:
+                rejected.append(f"{lg}/{sh}: a leg is already used today")
+                continue
+            st = pair_stats(prices.frame, lg, sh, stop_mult=stop_mult)
+            if not st or st.corr < corr_floor:
+                rejected.append(f"{lg}/{sh}: correlation {st.corr if st else 'n/a'}")
+                continue
+            sec = uni.get(lg, spec.get("sector", ""))
+            if per_sector.get(sec, 0) >= sector_cap:
+                rejected.append(f"{lg}/{sh}: already {sector_cap} ideas in {sec}")
+                continue
+            weak = [k for k in ("what_it_is", "long_case", "short_case")
+                    if not clean(spec.get(k, "") or "", claims_by_id, snap)[0].strip()]
+            if weak:
+                rejected.append(f"{lg}/{sh}: no sourced case for {', '.join(weak)}")
+                continue
+            if st.corr < min_corr and spec.get("conviction") == "High":
+                spec["conviction"], spec["conviction_reason"] = "Medium", "the pair's correlation is only moderate"
+            picked.append(Idea(spec, st, {}))
+            used.update({lg, sh})
+            per_sector[sec] = per_sector.get(sec, 0) + 1
+
+    specs = _ask(llm, system, user)
+    consider(specs, min_corr, max_sector)
+    if len(picked) < n_lo:
+        log.info("Only %d ideas passed; asking for more", len(picked))
+        more = (f"\n\nThese candidates were rejected: {rejected[:12]}. Already accepted: "
+                f"{[(i.spec['long'], i.spec['short']) for i in picked]}. Give {n_lo - len(picked) + 3} new "
+                f"candidates from the pre-screened pairs, in sectors not yet used where possible.")
+        consider(_ask(llm, system, user + more), min_corr, max_sector)
+    if len(picked) < n_lo:          # last resort: relax the limits, and say so through conviction
+        consider(specs, floor_corr, max_sector + 1)
+    if min_against and not any(i.spec.get("against_consensus") for i in picked):
+        log.info("No against-consensus idea passed today")
+    if len(picked) < n_lo:
+        log.warning("Only %d trade ideas today", len(picked))
+    names = F.company_names(db, [t for i in picked for t in (i.spec["long"], i.spec["short"])])
+    for idea in picked:
+        _finish(idea, settings, db, prices, uni, claims_by_id, snap, cfg, today, names)
+    return picked
 
 
-def _peers(spec: dict, uni: dict[str, str], db: DB, n: int) -> list[str]:
+def _peers(spec: dict, uni: dict[str, str], n: int) -> list[str]:
     legs = {spec["long"], spec["short"]}
-    peers = [p for p in spec.get("peers", []) if p in uni and p not in legs]
+    sec = uni.get(spec["long"])
+    peers = [p for p in spec.get("peers", []) if uni.get(p) in (sec, uni.get(spec["short"])) and p not in legs]
     if len(peers) < n:
-        sec = uni.get(spec["long"])
         peers += [t for t, s in uni.items() if s == sec and t not in legs and t not in peers
                   and not t.startswith("^") and len(t) > 2][: n - len(peers)]
     return peers[:n]
 
 
+def _name(spec: dict, leg: str, names: dict[str, str]) -> str:
+    n = spec.get(f"{leg}_name") or names.get(spec[leg]) or spec[leg]
+    return n.replace(".", "․") if "." in n and " " not in n else n   # keep tickers like DBK.DE from auto-linking
+
+
+def _fmt_price(v: float) -> str:
+    return f"{v:,.2f}" if v < 10000 else f"{v:,.0f}"
+
+
+def chart(prices: Prices, st: PairStats, target: float, long_name: str, short_name: str) -> bytes | None:
+    """A one-year chart of the spread with entry, target and stop marked."""
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except ImportError:
+        return None
+    df = prices.frame[[st.long, st.short]].dropna().iloc[-253:]
+    if len(df) < 60:
+        return None
+    spread = np.log(df[st.long]) - st.beta * np.log(df[st.short])
+    rel = (np.exp(spread - st.spread_now) - 1) * 100       # % from today's level, hedged
+    fig, ax = plt.subplots(figsize=(7.2, 2.8), dpi=150)
+    ax.plot(rel.index, rel.values, color="#3b6ea5", lw=1.4)
+    for lvl, col, lab in ((0, "#555555", "Entry"), ((math.exp(target - st.spread_now) - 1) * 100, "#2e8b57", "Target"),
+                          ((math.exp(st.stop_spread - st.spread_now) - 1) * 100, "#c0392b", "Stop")):
+        ax.axhline(lvl, color=col, lw=1, ls="--")
+        ax.text(rel.index[0], lvl, f" {lab}", color=col, va="bottom", fontsize=8)
+    ax.set_title(f"Long {long_name} / short {short_name}: hedged spread, % from entry", fontsize=9, loc="left")
+    ax.tick_params(labelsize=7)
+    for side in ("top", "right"):
+        ax.spines[side].set_visible(False)
+    ax.grid(axis="y", alpha=0.2)
+    fig.tight_layout()
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png")
+    plt.close(fig)
+    return buf.getvalue()
+
+
 def _finish(idea: Idea, settings: Settings, db: DB, prices: Prices, uni: dict[str, str],
-            claims_by_id: dict[int, dict], snap: Snapshot) -> None:
+            claims_by_id: dict[int, dict], snap: Snapshot, cfg: dict, today: date, names: dict[str, str]) -> None:
     spec, st = idea.spec, idea.stats
-    n_peers = (settings.get("trade_ideas.comps.peers_per_idea") or [3, 4])[-1]
-    peers = _peers(spec, uni, db, n_peers)
-
-    def ret(t, k):
-        return prices.returns(t, 21) if k == "1m" else prices.ytd(t)
-
-    idea.comps = C.build([spec["long"], spec["short"]], peers, lambda t: F.get(db, t), ret)
-    text_fields = " ".join(spec.get(k, "") for k in ("thesis", "why_now", "consensus", "wrong_if"))
-    clean, problems = check_section(text_fields, claims_by_id, snap.numbers,
-                                    [idea.comps["markdown"]])
+    n_peers = (cfg.get("comps", {}) or {}).get("peers_per_idea", [3, 4])[-1]
+    idea.comps = C.build([spec["long"], spec["short"]], _peers(spec, uni, n_peers), lambda t: F.get(db, t))
+    extra = [idea.comps["markdown"]]
+    texts, problems = {}, []
+    for k in ("what_it_is", "long_case", "short_case", "wrong_if", "catalyst"):
+        txt, ids, pr = clean(spec.get(k, "") or "", claims_by_id, snap, extra)
+        texts[k] = txt
+        idea.cited |= ids
+        problems += pr
     idea.problems = problems
-    th, _ = check_section(spec.get("thesis", ""), claims_by_id, snap.numbers, [idea.comps["markdown"]])
-    wn, _ = check_section(spec.get("why_now", ""), claims_by_id, snap.numbers, [idea.comps["markdown"]])
-    cs, _ = check_section(spec.get("consensus", ""), claims_by_id, snap.numbers, [idea.comps["markdown"]])
-    wr, _ = check_section(spec.get("wrong_if", ""), claims_by_id, snap.numbers, [idea.comps["markdown"]])
-    from ..analysis.checks import CITE
-    idea.cited = {int(x) for x in CITE.findall(th + wn + cs + wr)}
-    prem = C.premium_sentence(idea.comps["premium"])
-    tag = "Against consensus" if spec.get("against_consensus") else "With consensus"
-    stats_line = (f"Hedge ratio {st.beta:.2f} (short {st.beta:.2f} of {spec['short']} per 1 of "
-                  f"{spec['long']}); 1-year correlation {st.corr:.2f}; spread z-score {st.zscore_60:+.1f} "
-                  f"vs 60 days; stop if the spread falls {settings.get('trade_ideas.stop_spread_vol_multiple', 1.5)}x "
-                  f"its 60-day volatility below entry.")
-    idea.markdown = "\n".join([
-        f"### {spec['headline']}",
-        f"**{spec['origin']}** · {tag} · Confidence: {spec.get('confidence', 'Medium')}"
-        + (f" ({spec['confidence_reason']})" if spec.get("confidence_reason") else ""),
-        f"- **The pair isolates:** {spec.get('isolates', '')}",
-        f"- **Thesis:** {th}",
-        f"- **Why now:** {wn}",
-        f"- **Consensus:** {cs}",
-        f"- **What would prove it wrong:** {wr}",
-        f"- **Statistics:** {stats_line}",
-        f"- **Valuation:** {prem or 'see comps'}",
+    idea.texts = texts
+    (idea.target_spread, idea.target_return, idea.stop_return, idea.horizon_end,
+     idea.target_label) = plan(st, cfg, today)
+    ln, sn = _name(spec, "long", names), _name(spec, "short", names)
+    idea.chart = chart(prices, st, idea.target_spread, ln, sn)
+    conv = spec.get("conviction", "Medium")
+    conv_txt = f'<span color="{CONVICTION_COLOR.get(conv, "gray")}">{conv}</span>'
+    if spec.get("conviction_reason"):
+        conv_txt += f" ({spec['conviction_reason'].rstrip('.')})"
+    end = date.fromisoformat(idea.horizon_end).strftime("%-d %b")
+    horizon = f"{cfg.get('max_holding_trading_days', 20)} trading days (to {end})"
+    if texts.get("catalyst"):
+        horizon += f"; catalyst: {texts['catalyst'].rstrip('.')}"
+    tgt = f"{idea.target_return * 100:+.1f}%".replace("-", "−")
+    stp = f"{idea.stop_return * 100:+.1f}%".replace("-", "−")
+    entry = (f"{ln} {_fmt_price(st.entry_long)} / {sn} {_fmt_price(st.entry_short)} "
+             f"({st.beta:.2f} of {sn} short per 1 of {ln} long)")
+    dash = (settings.get("notion.pages", {}) or {}).get("dashboard")
+    lines = [
+        "::: callout 📈 gray",
+        f"**Long {ln} · Short {sn}** — {spec.get('headline', '').rstrip('.')}",
+        f"**What the trade is:** {texts['what_it_is']}",
+        f"**Why {sn} (short):** {texts['short_case']}",
+        f"**Why {ln} (long):** {texts['long_case']}",
+        f"**What would prove it wrong:** {texts['wrong_if']}",
+        "| Entry | Target | Stop | Horizon | Conviction |",
+        "|---|---|---|---|---|",
+        f"| {entry} | <span color=\"green\">{tgt}</span> hedged ({idea.target_label}) | <span color=\"red\">{stp}</span> "
+        f"(spread falls a further {cfg.get('stop_spread_vol_multiple', 1.5)}× its 60-day volatility) | {horizon} | {conv_txt} |",
         "::: toggle Comps",
         idea.comps["markdown"],
         ":::",
-    ])
+        "{{chart}}",
+        ("→ Tick **Following** on this idea in the " + (f"[Trade idea dashboard](notion:{dash})" if dash else "Ideas database")
+         + " and it gets tracked to its target or stop."),
+        ":::",
+    ]
+    idea.markdown = "\n".join(lines)
+    idea.pitch = idea.markdown
 
 
-def save(db: DB, ideas: list[Idea], today: date) -> None:
+def save(db: DB, ideas: list[Idea], today: date, briefing_url: str | None = None) -> None:
     for i in ideas:
         s, st = i.spec, i.stats
+        thesis = f"{i.texts.get('what_it_is', '')} Long: {i.texts.get('long_case', '')} Short: {i.texts.get('short_case', '')}"
         db.ex("INSERT INTO ideas(created,long,short,sector,origin,hedge_ratio,corr,entry_long,entry_short,"
-              "entry_spread,spread_std,stop_spread,thesis,wrong,against_consensus,confidence,source_names) "
-              "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+              "entry_spread,spread_std,stop_spread,thesis,wrong,against_consensus,confidence,source_names,"
+              "headline,target_spread,target_return,stop_return,horizon_end,best,worst,outcome,briefing_url,spec) "
+              "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
               (today.isoformat(), s["long"], s["short"], s.get("sector"), s.get("origin"), st.beta, st.corr,
                st.entry_long, st.entry_short, st.spread_now, st.spread_std_60, st.stop_spread,
-               s.get("thesis"), s.get("wrong_if"), int(bool(s.get("against_consensus"))),
-               s.get("confidence"), json.dumps(sorted(i.cited))))
+               thesis.strip(), i.texts.get("wrong_if"), int(bool(s.get("against_consensus"))),
+               s.get("conviction"), json.dumps(sorted(i.cited)), s.get("headline"), i.target_spread,
+               i.target_return, i.stop_return, i.horizon_end, 0.0, 0.0, "Open", briefing_url,
+               json.dumps({**s, "markdown": i.pitch or i.markdown})))
 
 
-def scorecard(db: DB, since: str) -> str:
-    rows = [dict(r) for r in db.q("SELECT * FROM ideas WHERE created>=? OR closed>=?", (since, since))]
-    if not rows:
-        return "- No ideas tracked yet."
-    closed = [r for r in rows if r["status"] != "Open"]
+def scorecard(db: DB) -> str:
+    """Closed ideas: every idea against the ones the reader followed."""
     allc = [dict(r) for r in db.q("SELECT * FROM ideas WHERE status!='Open'")]
-    wins = [r for r in allc if (r["pnl"] or 0) > 0]
-    lines = [f"- This week: {len(rows)} ideas tracked, {len(closed)} closed.",
-             f"- All time: {len(allc)} closed, hit rate {len(wins) / len(allc) * 100:.0f}%, average "
-             f"{sum(r['pnl'] or 0 for r in allc) / len(allc) * 100:+.1f}% hedged." if allc else
-             "- All time: none closed yet."]
-    by_origin: dict[str, list[float]] = {}
-    for r in allc:
-        by_origin.setdefault(r["origin"] or "Other", []).append(r["pnl"] or 0)
-    for o, v in sorted(by_origin.items(), key=lambda kv: -len(kv[1])):
-        lines.append(f"- {o}: {len(v)} closed, average {sum(v) / len(v) * 100:+.1f}%")
-    for r in rows:
-        lines.append(f"- Long {r['long']} / short {r['short']} ({r['status']}): {(r['pnl'] or 0) * 100:+.1f}%")
+    n_open = db.one("SELECT COUNT(*) n FROM ideas WHERE status='Open'")["n"]
+    if not allc:
+        return (f"No idea has closed yet; {n_open} open. Ideas close when they hit their target or stop, "
+                "or after 20 trading days.")
+
+    def col(rows: list[dict]) -> list[str]:
+        if not rows:
+            return ["–"] * 5
+        n = len(rows)
+        hit = sum(r["outcome"] == "Hit target" for r in rows)
+        stop = sum(r["outcome"] == "Stopped out" for r in rows)
+        exp = n - hit - stop
+        wins = sum((r["pnl"] or 0) > 0 for r in rows)
+        avg = sum(r["pnl"] or 0 for r in rows) / n * 100
+        return [str(hit), str(stop), str(exp), f"{wins / n * 100:.0f}%", f"{avg:+.1f}%".replace("-", "−")]
+
+    a, f = col(allc), col([r for r in allc if r.get("following")])
+    labels = ["Hit target", "Stopped out", "Expired", "Made money", "Average return (hedged)"]
+    lines = ["| | All ideas | Ideas you followed |", "|---|---|---|"]
+    lines += [f"| {lab} | {x} | {y} |" for lab, x, y in zip(labels, a, f)]
+    lines.append(f"\n*{len(allc)} closed, {n_open} open.*")
     return "\n".join(lines)
