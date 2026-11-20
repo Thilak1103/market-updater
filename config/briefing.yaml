@@ -71,6 +71,8 @@ trade_ideas:
   stop_spread_vol_multiple: 1.5
   target_spread_vol_multiple: 2.0    # target when the spread is not already well below its 60-day mean
   max_holding_trading_days: 20       # the horizon of every idea
+  min_review_score: 6                # a second Opus pass scores each idea 1-10; below this it is dropped
+                                     # (or kept as Low conviction if needed to reach the daily minimum)
   label: "Idea for research, not advice"
   comps:
     peers_per_idea: [3, 4]          # plus both legs; same subsector, from watch lists

@@ -24,12 +24,14 @@ from ..db import DB
 from ..llm import LLMUnavailable
 from ..market import comps as C
 from ..market import fundamentals as F
+from ..market import positioning as POS
 from ..market.pairs import PairStats, pair_pnl, pair_stats, stopped
 from ..market.prices import Prices
 from ..market.snapshot import Snapshot
 from ..settings import Settings
 from ..util import log
 from . import prompts as P
+from ..analysis.checks import CITE
 from .sections import claim_line, clean, select
 
 CONVICTION_COLOR = {"High": "green", "Medium": "orange", "Low": "gray"}
@@ -51,6 +53,8 @@ class Idea:
     chart: bytes | None = None
     texts: dict = field(default_factory=dict)
     pitch: str = ""            # the markdown before the briefing's chart is put in
+    score: int = 0             # the reviewer's 1-10 score
+    critique: str = ""
 
 
 def universe(settings: Settings) -> dict[str, str]:
@@ -223,9 +227,11 @@ def generate(settings: Settings, db: DB, llm, prices: Prices, states: list[Debat
     used: set[str] = set()
     per_sector: dict[str, int] = {}
 
+    pool = n_hi + 1          # one spare: the review step can drop the weakest
+
     def consider(specs: list[dict], corr_floor: float, sector_cap: int) -> None:
         for spec in specs:
-            if len(picked) >= n_hi:
+            if len(picked) >= pool:
                 return
             lg, sh = spec.get("long"), spec.get("short")
             if lg not in uni or sh not in uni or lg == sh or (lg, sh) in open_pairs:
@@ -269,8 +275,20 @@ def generate(settings: Settings, db: DB, llm, prices: Prices, states: list[Debat
         log.warning("Only %d trade ideas today", len(picked))
     names = F.company_names(db, [t for i in picked for t in (i.spec["long"], i.spec["short"])])
     for idea in picked:
-        _finish(idea, settings, db, prices, uni, claims_by_id, snap, cfg, today, names)
-    return picked
+        _finish(idea, settings, db, llm, prices, uni, claims_by_id, snap, cfg, today, names)
+    # Keep the strongest: everything the reviewer scored 6+, topped up to the daily minimum.
+    min_score = int(cfg.get("min_review_score", 6))
+    ranked = sorted(picked, key=lambda i: -i.score)
+    keep = [i for i in ranked if i.score >= min_score or i.score == 0]
+    if len(keep) < n_lo:
+        keep = ranked[:n_lo]
+        for i in keep:             # kept only to reach the minimum: say so
+            if 0 < i.score < min_score:
+                _relabel_low(i, i.critique or "the reviewer found the evidence thin")
+    for i in ranked:
+        if i not in keep[:n_hi]:
+            log.info("Dropped %s/%s after review (score %s): %s", i.spec["long"], i.spec["short"], i.score, i.critique)
+    return keep[:n_hi]
 
 
 def _peers(spec: dict, uni: dict[str, str], n: int) -> list[str]:
@@ -323,32 +341,87 @@ def chart(prices: Prices, st: PairStats, target: float, long_name: str, short_na
     return buf.getvalue()
 
 
-def _finish(idea: Idea, settings: Settings, db: DB, prices: Prices, uni: dict[str, str],
+def _sharpen(llm, idea: Idea, data_pack: str, material: str, cfg: dict) -> dict:
+    """Second pass: a sceptical PM rewrites the pitch around the data and scores it."""
+    days = cfg.get("max_holding_trading_days", 20)
+    system = P.SHARPEN.format(days=days, end=idea.horizon_end)
+    keep = {k: idea.spec.get(k) for k in ("long", "short", "headline", "what_it_is", "long_case", "short_case",
+                                         "wrong_if", "catalyst", "origin", "against_consensus")}
+    user = f"The pitch:\n{json.dumps(keep, ensure_ascii=False)}\n\n{data_pack}\n\nMaterial:\n{material}"
+    try:
+        return llm.json(tier="trade_ideas", purpose="trade_idea_review", system=system, user=user,
+                        schema=P.SHARPEN_SCHEMA, max_tokens=2500) or {}
+    except (LLMUnavailable, ValueError) as e:
+        log.warning("Review of %s/%s failed: %s", idea.spec["long"], idea.spec["short"], e)
+        return {}
+
+
+def _finish(idea: Idea, settings: Settings, db: DB, llm, prices: Prices, uni: dict[str, str],
             claims_by_id: dict[int, dict], snap: Snapshot, cfg: dict, today: date, names: dict[str, str]) -> None:
     spec, st = idea.spec, idea.stats
+    lg, sh = spec["long"], spec["short"]
     n_peers = (cfg.get("comps", {}) or {}).get("peers_per_idea", [3, 4])[-1]
-    idea.comps = C.build([spec["long"], spec["short"]], _peers(spec, uni, n_peers), lambda t: F.get(db, t))
-    extra = [idea.comps["markdown"]]
+    idea.comps = C.build([lg, sh], _peers(spec, uni, n_peers), lambda t: F.get(db, t))
+    (idea.target_spread, idea.target_return, idea.stop_return, idea.horizon_end,
+     idea.target_label) = plan(st, cfg, today)
+    ln, sn = _name(spec, "long", names), _name(spec, "short", names)
+    rows = {r["ticker"]: r for r in idea.comps.get("rows", [])}
+    med = idea.comps.get("median", {})
+    pos = {t: POS.get(db, t, today) for t in (lg, sh)}
+    for t, leg in ((lg, "long"), (sh, "short")):     # fall back to our own price where Yahoo has none
+        q = prices.quote(t)
+        if q and not pos[t].get("price"):
+            pos[t]["price"] = q.last
+    pos_md = POS.table([(ln, lg, pos[lg], rows.get(lg, {}), med), (sn, sh, pos[sh], rows.get(sh, {}), med)])
+
+    # Second pass: review and sharpen with the data in front of the reviewer
+    tick = {lg, sh}
+    related = [c for c in claims_by_id.values() if tick & set(c.get("tickers") or [])]
+    cited = {int(x) for k in ("long_case", "short_case", "what_it_is") for x in CITE.findall(spec.get(k, "") or "")}
+    related += [claims_by_id[i] for i in cited if i in claims_by_id and claims_by_id[i] not in related]
+    material = "\n".join(claim_line(c, settings.people) for c in related[:40]) or "(none beyond the pitch)"
+    pack = (f"Pair statistics: 1-year correlation {st.corr:.2f}; hedge ratio {st.beta:.2f}; spread z-score "
+            f"{st.zscore_60:+.1f} vs its 60-day average. Target: {idea.target_label}, worth "
+            f"{idea.target_return * 100:+.1f}% hedged; stop {idea.stop_return * 100:+.1f}%; horizon to {idea.horizon_end}.\n\n"
+            f"Valuation and positioning:\n{pos_md}\n\nComps:\n{idea.comps['markdown']}")
+    review = _sharpen(llm, idea, pack, material, cfg) if llm is not None else {}
+    if review:
+        idea.score = int(review.get("score") or 0)
+        idea.critique = review.get("critique", "")
+        for k in ("long_case", "short_case", "wrong_if", "conviction", "conviction_reason"):
+            if review.get(k):
+                spec[k] = review[k]
+        spec["variant_consensus"] = review.get("variant_consensus", "")
+        spec["variant_ours"] = review.get("variant_ours", "")
+        spec["catalysts"] = review.get("catalysts") or []
+    if st.corr < float(cfg.get("min_pair_correlation_1y", 0.6)) and spec.get("conviction") == "High":
+        spec["conviction"], spec["conviction_reason"] = "Medium", "the pair's correlation is only moderate"
+
+    extra = [idea.comps["markdown"], pos_md, pack]
     texts, problems = {}, []
-    for k in ("what_it_is", "long_case", "short_case", "wrong_if", "catalyst"):
+    for k in ("what_it_is", "variant_consensus", "variant_ours", "long_case", "short_case", "wrong_if", "catalyst"):
         txt, ids, pr = clean(spec.get(k, "") or "", claims_by_id, snap, extra)
         texts[k] = txt
         idea.cited |= ids
         problems += pr
+    cats = []
+    for c in spec.get("catalysts") or []:
+        ev, ids, pr = clean(c.get("event", ""), claims_by_id, snap, extra + [c.get("date", "")])
+        if ev:
+            cats.append(f"{_nice_date(c.get('date', ''))}: {ev.rstrip('.')}")
+            idea.cited |= ids
+    if not cats and texts.get("catalyst"):
+        cats = [texts["catalyst"].rstrip(".")]
     idea.problems = problems
-    idea.texts = texts
-    (idea.target_spread, idea.target_return, idea.stop_return, idea.horizon_end,
-     idea.target_label) = plan(st, cfg, today)
-    ln, sn = _name(spec, "long", names), _name(spec, "short", names)
+    idea.texts = {**texts, "catalysts": cats}
     idea.chart = chart(prices, st, idea.target_spread, ln, sn)
+
     conv = spec.get("conviction", "Medium")
     conv_txt = f'<span color="{CONVICTION_COLOR.get(conv, "gray")}">{conv}</span>'
     if spec.get("conviction_reason"):
         conv_txt += f" ({spec['conviction_reason'].rstrip('.')})"
     end = date.fromisoformat(idea.horizon_end).strftime("%-d %b")
     horizon = f"{cfg.get('max_holding_trading_days', 20)} trading days (to {end})"
-    if texts.get("catalyst"):
-        horizon += f"; catalyst: {texts['catalyst'].rstrip('.')}"
     tgt = f"{idea.target_return * 100:+.1f}%".replace("-", "−")
     stp = f"{idea.stop_return * 100:+.1f}%".replace("-", "−")
     entry = (f"{ln} {_fmt_price(st.entry_long)} / {sn} {_fmt_price(st.entry_short)} "
@@ -357,30 +430,58 @@ def _finish(idea: Idea, settings: Settings, db: DB, prices: Prices, uni: dict[st
     lines = [
         "::: callout 📈 gray",
         f"**Long {ln} · Short {sn}** — {spec.get('headline', '').rstrip('.')}",
-        f"**What the trade is:** {texts['what_it_is']}",
+        f"**The trade:** {texts['what_it_is']}",
+    ]
+    if texts.get("variant_consensus") and texts.get("variant_ours"):
+        lines.append(f"**What the market thinks:** {texts['variant_consensus']} **What we think:** {texts['variant_ours']}")
+    lines += [
         f"**Why {sn} (short):** {texts['short_case']}",
         f"**Why {ln} (long):** {texts['long_case']}",
+    ]
+    if cats:
+        lines.append("**Catalysts:** " + " · ".join(cats) + ".")
+    lines += [
         f"**What would prove it wrong:** {texts['wrong_if']}",
         "| Entry | Target | Stop | Horizon | Conviction |",
         "|---|---|---|---|---|",
         f"| {entry} | <span color=\"green\">{tgt}</span> hedged ({idea.target_label}) | <span color=\"red\">{stp}</span> "
         f"(spread falls a further {cfg.get('stop_spread_vol_multiple', 1.5)}× its 60-day volatility) | {horizon} | {conv_txt} |",
+        pos_md,
         "::: toggle Comps",
         idea.comps["markdown"],
         ":::",
         "{{chart}}",
-        ("→ Tick **Following** on this idea in the " + (f"[Trade idea dashboard](notion:{dash})" if dash else "Ideas database")
-         + " and it gets tracked to its target or stop."),
+        ("→ Tick **Following** to track this idea, or **Build out** for a model and deeper due diligence, in the "
+         + (f"[Trade idea dashboard](notion:{dash})" if dash else "Ideas database") + "."),
         ":::",
     ]
     idea.markdown = "\n".join(lines)
     idea.pitch = idea.markdown
 
 
+def _relabel_low(idea: Idea, reason: str) -> None:
+    import re
+    old = re.search(r"\| <span color=\"\w+\">(Low|Medium|High)</span>[^|]*\|$", idea.markdown, re.M)
+    new = f'| <span color="gray">Low</span> ({reason.rstrip(".")}) |'
+    if old:
+        idea.markdown = idea.markdown[:old.start()] + new + idea.markdown[old.end():]
+        idea.pitch = idea.markdown
+    idea.spec["conviction"] = "Low"
+
+
+def _nice_date(s: str) -> str:
+    try:
+        return date.fromisoformat(s[:10]).strftime("%-d %b")
+    except ValueError:
+        return s
+
+
 def save(db: DB, ideas: list[Idea], today: date, briefing_url: str | None = None) -> None:
     for i in ideas:
         s, st = i.spec, i.stats
-        thesis = f"{i.texts.get('what_it_is', '')} Long: {i.texts.get('long_case', '')} Short: {i.texts.get('short_case', '')}"
+        thesis = (f"{i.texts.get('what_it_is', '')} Market view: {i.texts.get('variant_consensus', '')} "
+                  f"Our view: {i.texts.get('variant_ours', '')} Long: {i.texts.get('long_case', '')} "
+                  f"Short: {i.texts.get('short_case', '')}")
         db.ex("INSERT INTO ideas(created,long,short,sector,origin,hedge_ratio,corr,entry_long,entry_short,"
               "entry_spread,spread_std,stop_spread,thesis,wrong,against_consensus,confidence,source_names,"
               "headline,target_spread,target_return,stop_return,horizon_end,best,worst,outcome,briefing_url,spec) "
