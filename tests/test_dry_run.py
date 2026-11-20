@@ -22,6 +22,11 @@ def _offline(monkeypatch, tmp_path):
     monkeypatch.setattr(F, "yahoo_fundamentals", lambda t: dict(fund, name=f"{t} plc"))
     import market_updater.publish.telegram as T
     monkeypatch.setattr(T, "send", lambda text: False)
+    import market_updater.market.positioning as POS
+    monkeypatch.setattr(POS, "fetch", lambda t: {
+        "ticker": t, "price": 100.0, "short_pct_float": 0.032, "days_to_cover": 1.5, "target_mean": 120.0,
+        "ratings": {"strongBuy": 5, "buy": 10, "hold": 6, "sell": 1, "strongSell": 0},
+        "eps_up_30d": 4, "eps_down_30d": 1})
 
 
 def test_friday_dry_run_builds_every_section(settings, db, fake_prices, monkeypatch, tmp_path):
@@ -67,6 +72,14 @@ def test_friday_dry_run_builds_every_section(settings, db, fake_prices, monkeypa
     assert "**Long Nvidia · Short AMD**" in md and "Why AMD (short):" in md and "Why Nvidia (long):" in md
     assert "Mkt cap" not in md and "ROIC" not in md and "EV/EBITDA" in md and "P/E fwd" in md
     assert "Hedge ratio" not in md and "Statistics" not in md and "The pair isolates" not in md
+    # The review pass: variant view, dated catalysts, positioning table; the weakest idea is dropped
+    assert "**What the market thinks:**" in md and "**What we think:**" in md
+    assert "**Catalysts:** 17 Dec: Results day" in md and "Invented catalyst" not in md
+    assert "| Short interest | 3.2% of float, 1.5 days to cover |" in md and "15 buy / 6 hold / 1 sell" in md
+    assert "Value at peer multiple" in md and "Build out" in md
+    # Only three candidates passed, so the weak one stays, labelled Low and placed last
+    last = md[md.rindex("::: callout 📈 gray"):]
+    assert "Goldman Sachs" in last and '<span color="gray">Low</span> (Thin evidence on the short leg)' in last
     assert "trading days (to " in md and "hedged" in md
     assert "Fee income" not in md          # the long case with an unsourced number was cut
     assert "TSCO.L" in md

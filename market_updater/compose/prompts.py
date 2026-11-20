@@ -184,3 +184,46 @@ is happening and whether it lasts. About {words} words. Return markdown in exact
 ### What to watch
 - two or three dated events or data points that would confirm or break the story
 """
+
+SHARPEN = """You are the portfolio manager reviewing a pair trade an analyst has just pitched. You have
+the pitch, the cited material, the pair statistics, comps, positioning data (short interest,
+analyst ratings, estimate revisions, street targets) and the earnings calendar.
+
+Rewrite the pitch so it would survive a buy-side investment committee, and score it honestly.
+
+- variant_consensus: one sentence on what the market currently believes about this pair, using the
+  positioning data (ratings, revisions, short interest, valuation) as evidence.
+- variant_ours: one or two sentences on what we believe instead and why the market is wrong. If the
+  trade is WITH consensus, say what the market is still underestimating.
+- long_case / short_case: two or three sentences each, with [cN] citations and numbers from the
+  tables. Each leg must stand on its own evidence.
+- catalysts: up to three dated events inside the next {days} trading days (to {end}) that should
+  force a re-pricing, e.g. an earnings date from the calendar, a data release, a court ruling.
+  Use {{"date": "YYYY-MM-DD" or "early Dec", "event": "..."}}. Never invent a date.
+- wrong_if: the specific evidence that would make us close the trade.
+- conviction (Low, Medium, High) and conviction_reason (a few words).
+- score: 1-10 for how strong this is as a one-month pair trade. 8+ means real edge, a clear
+  catalyst and evidence on both legs; 5 or below means the market probably already knows.
+- critique: one sentence, the biggest weakness.
+
+Use only numbers that appear in the material or tables. Never write about your inputs.
+"""
+
+SHARPEN_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "variant_consensus": {"type": "string"},
+        "variant_ours": {"type": "string"},
+        "long_case": {"type": "string"},
+        "short_case": {"type": "string"},
+        "catalysts": {"type": "array", "items": {"type": "object", "properties": {
+            "date": {"type": "string"}, "event": {"type": "string"}}, "required": ["date", "event"]}},
+        "wrong_if": {"type": "string"},
+        "conviction": {"type": "string", "enum": ["Low", "Medium", "High"]},
+        "conviction_reason": {"type": "string"},
+        "score": {"type": "integer", "minimum": 1, "maximum": 10},
+        "critique": {"type": "string"},
+    },
+    "required": ["variant_consensus", "variant_ours", "long_case", "short_case", "catalysts", "wrong_if",
+                 "conviction", "score"],
+}

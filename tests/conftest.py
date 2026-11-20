@@ -83,6 +83,17 @@ def fake_responder(purpose: str, system: str, user: str):
             idea("GS", "MS", "financials", long_name="Goldman Sachs", short_name="Morgan Stanley",
                  peers=["JPM", "TSCO.L"]),
         ]}
+    if purpose == "trade_idea_review":
+        pitch = json.loads(user.split("The pitch:\n", 1)[1].split("\n", 1)[0])
+        weak = pitch["long"] == "GS"
+        return {"variant_consensus": "Analysts are mostly buyers of both names.",
+                "variant_ours": "The market is underestimating how far the short leg's margins can fall.",
+                "long_case": pitch["long_case"], "short_case": pitch["short_case"],
+                "catalysts": [{"date": "2026-12-17", "event": "Results day"},
+                              {"date": "2026-12-01", "event": "Invented catalyst with a made-up 44.4% number"}],
+                "wrong_if": "Dropped idea" if weak else pitch["wrong_if"], "conviction": "Medium",
+                "conviction_reason": "one-sided evidence", "score": 3 if weak else 7,
+                "critique": "Thin evidence on the short leg."}
     if purpose.startswith("earnings_"):
         return {"verdict": "Shares moved more than usual; the call was better than that.",
                 "reaction_fit": "overdone", "review": "- **Market reaction** Bigger than the usual move.\n- **Does the reaction fit?** No."}
