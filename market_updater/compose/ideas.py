@@ -15,7 +15,7 @@ import itertools
 import json
 import math
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, timedelta
 
 import numpy as np
 
@@ -79,12 +79,16 @@ def plan(st: PairStats, cfg: dict, today: date) -> tuple[float, float, float, st
     s_mult = float(cfg.get("stop_spread_vol_multiple", 1.5))
     days = int(cfg.get("max_holding_trading_days", 20))
     std = st.spread_std_60 or 1e-6
-    if st.zscore_60 <= -0.75 and st.spread_mean_60 - st.spread_now >= std:
+    gap = st.spread_mean_60 - st.spread_now
+    if st.zscore_60 <= -0.75 and 0 < gap <= t_mult * std:
         target = st.spread_mean_60
-        label = f"spread back to its 60-day average (now {abs(st.zscore_60):.1f} standard deviations below it)"
+        label = "the spread back to its 60-day average"
+    elif st.zscore_60 <= -0.75:
+        target = st.spread_now + t_mult * std     # don't promise the whole gap back in a month
+        label = f"the spread recovers {t_mult:g}× its 60-day volatility, part of the way to its 60-day average"
     else:
         target = st.spread_now + t_mult * std
-        label = f"spread widens {t_mult:g}× its 60-day volatility in the long's favour"
+        label = f"the spread moves {t_mult:g}× its 60-day volatility our way"
     target_ret = math.exp(target - st.spread_now) - 1
     stop_ret = math.exp(-s_mult * std) - 1
     end = np.busday_offset(np.datetime64(today.isoformat()), days, roll="forward")
@@ -129,6 +133,81 @@ def update_open(db: DB, prices: Prices, settings: Settings, today: date) -> list
                     "progress": (pnl / target_ret) if target_ret else None, "following": bool(idea.get("following")),
                     "headline": idea.get("headline")})
     return out
+
+
+STATUS_COLOR = {"On track": "green", "Watch": "orange", "Needs a tweak": "yellow", "Broken": "red"}
+
+
+def thesis_check(llm, db: DB, settings: Settings, claims: list[dict], snap: Snapshot,
+                 updates: list[dict], today: date) -> list[dict]:
+    """Ask, for every open idea: is the thesis playing out? Saves the answer and returns the rows."""
+    live = {u["id"]: u for u in updates if u["status"] == "Open"}
+    if not live:
+        return []
+    ideas = {r["id"]: dict(r) for r in db.q("SELECT * FROM ideas WHERE status='Open'") if r["id"] in live}
+    blocks, by_id = [], {}
+    for iid, r in ideas.items():
+        u = live[iid]
+        spec = json.loads(r.get("spec") or "{}")
+        legs = {r["long"], r["short"]}
+        news = [c for c in claims if legs & set(c.get("tickers") or [])][:8]
+        by_id.update({c["id"]: c for c in news})
+        prog = f"{u['progress'] * 100:.0f}% of the way to target" if u.get("progress") is not None else "n/a"
+        blocks.append("\n".join([
+            f"Idea {iid}: long {r['long']} / short {r['short']}: {r.get('headline') or ''}",
+            f"Thesis: {r.get('thesis') or ''}",
+            f"Proves it wrong: {r.get('wrong') or ''}",
+            f"Catalysts: {spec.get('catalysts') or spec.get('catalyst') or 'none given'}",
+            f"So far: day {u['day']} of {u['max_days']}, return {u['pnl'] * 100:+.1f}% hedged, {prog}, "
+            f"target {(r.get('target_return') or 0) * 100:+.1f}%, stop {(r.get('stop_return') or 0) * 100:+.1f}%",
+            "New material:", *(claim_line(c, settings.people) for c in news)]) if news else
+            "\n".join([f"Idea {iid}: long {r['long']} / short {r['short']}: {r.get('headline') or ''}",
+                       f"Thesis: {r.get('thesis') or ''}", f"Proves it wrong: {r.get('wrong') or ''}",
+                       f"So far: day {u['day']} of {u['max_days']}, return {u['pnl'] * 100:+.1f}% hedged, {prog}",
+                       "New material: none today"]))
+    try:
+        res = llm.json(tier="write", purpose="thesis_check", system=P.THESIS_CHECK, user="\n\n".join(blocks),
+                       schema=P.THESIS_SCHEMA, max_tokens=2500) or {}
+    except (LLMUnavailable, ValueError) as e:
+        log.warning("Thesis check failed: %s", e)
+        return []
+    out = []
+    for row in res.get("rows", []):
+        iid = row.get("id")
+        if iid not in ideas:
+            continue
+        note, _, _ = clean(row.get("note", ""), by_id, snap)
+        tweak, _, _ = clean(row.get("tweak", "") or "", by_id, snap)
+        status = row.get("status") if row.get("status") in STATUS_COLOR else "Watch"
+        full = note + (f" **Tweak:** {tweak}" if tweak else "")
+        db.ex("UPDATE ideas SET thesis_status=?, thesis_note=?, thesis_checked=? WHERE id=?",
+              (status, full, today.isoformat(), iid))
+        out.append({**live[iid], "thesis_status": status, "thesis_note": full})
+    return out
+
+
+def book_markdown(checks: list[dict], updates: list[dict], dashboard_id: str | None) -> str:
+    """Table of open ideas: day, return, and whether the thesis is playing out. Followed ideas first (⭐)."""
+    rows = {c["id"]: c for c in checks}
+    live = [rows.get(u["id"], u) for u in updates]
+    if not live:
+        return ""
+    live.sort(key=lambda u: (not u["following"], u["status"] != "Open", -(u.get("day") or 0)))
+    lines = ["| Idea | Day | Return | Thesis | What changed |", "|---|---|---|---|---|"]
+    for u in live:
+        pnl = f"{u['pnl'] * 100:+.1f}%".replace("-", "−")
+        col = "green" if u["pnl"] > 0 else "red" if u["pnl"] < 0 else "gray"
+        if u["status"] != "Open":
+            thesis, note, day = f"Closed: {u['outcome'].lower()}", u.get("reason") or "", "–"
+        else:
+            st = u.get("thesis_status") or "–"
+            thesis = f'<span color="{STATUS_COLOR.get(st, "gray")}">{st}</span>' if st != "–" else "–"
+            note, day = u.get("thesis_note") or "", f"{u['day']} of {u['max_days']}"
+        star = "⭐ " if u["following"] else ""
+        lines.append(f"| {star}Long {u['long']} / short {u['short']} | {day} | <span color=\"{col}\">{pnl}</span> | "
+                     f"{thesis} | {note} |")
+    link = f"\n*⭐ = ideas you follow. Full tracker: [Trade idea dashboard](notion:{dashboard_id}).*" if dashboard_id else ""
+    return "\n".join(lines) + link
 
 
 def following_markdown(updates: list[dict], dashboard_id: str | None) -> str:
@@ -200,95 +279,107 @@ def _ask(llm, system: str, user: str) -> list[dict]:
         return []
 
 
+def recently_pitched(db: DB, today: date, days: int) -> set[str]:
+    """Every ticker used in an idea opened in the last `days` calendar days, or still open."""
+    since = (today - timedelta(days=days)).isoformat()
+    rows = db.q("SELECT long, short FROM ideas WHERE created>=? OR status='Open'", (since,))
+    return {t for r in rows for t in (r["long"], r["short"])}
+
+
 def generate(settings: Settings, db: DB, llm, prices: Prices, states: list[DebateState],
              claims: list[dict], reports: list, snap: Snapshot, today: date | None = None) -> list[Idea]:
+    """Pitch only ideas that survive review. Up to three rounds of: propose -> statistics and
+    evidence checks -> comps and positioning -> sceptical review (score 1-10). Ideas scoring
+    below `min_review_score` are never pitched, even if that means fewer than three."""
     today = today or date.today()
     cfg = settings.get("trade_ideas", {}) or {}
     n_lo, n_hi = (cfg.get("per_day") or [3, 4])
     min_corr = float(cfg.get("min_pair_correlation_1y", 0.6))
-    floor_corr = float(cfg.get("fallback_min_correlation_1y", 0.5))
     stop_mult = float(cfg.get("stop_spread_vol_multiple", 1.5))
     min_against = int(cfg.get("min_against_crowded_consensus", 1))
     max_sector = int(cfg.get("max_per_sector", 2))
+    min_score = int(cfg.get("min_review_score", 7))
+    rounds = int(cfg.get("review_rounds", 3))
     uni = universe(settings)
-    opened = open_ideas(db)
-    open_pairs = {(i["long"], i["short"]) for i in opened}
-    pairs = shortlist(settings, prices, uni, min_corr, set())
+    blocked = recently_pitched(db, today, int(cfg.get("no_repeat_days", 21)))
+    pairs = shortlist(settings, prices, uni, min_corr, blocked)
     pair_txt = "\n".join(f"- {p.long} / {p.short} ({uni.get(p.long)}): corr {p.corr:.2f}; spread z-score "
                          f"{p.zscore_60:+.1f} for long {p.long} / short {p.short} (reverse the sign for the "
                          f"opposite trade)" for p in pairs) or "(none passed today)"
     ctx, claims_by_id = _context(settings, states, claims, reports, snap)
     user = (f"Universe (ticker: sector): {json.dumps(uni)}\n\nPre-screened pairs:\n{pair_txt}\n\n"
-            f"Open ideas (do not repeat): {sorted(open_pairs)}\n\n{ctx}")
+            f"Recently pitched or still open, so NOT allowed in either leg: {sorted(blocked)}\n\n{ctx}")
     system = P.IDEAS_SYSTEM.format(min_against=min_against, n_candidates=8, n_final=n_hi)
+    names: dict[str, str] = {}
 
-    picked: list[Idea] = []
-    rejected: list[str] = []
+    kept: list[Idea] = []
+    tried: set[tuple[str, str]] = set()
+    notes: list[str] = []            # why candidates failed, fed back to the next round
     used: set[str] = set()
-    per_sector: dict[str, int] = {}
 
-    pool = n_hi + 1          # one spare: the review step can drop the weakest
-
-    def consider(specs: list[dict], corr_floor: float, sector_cap: int) -> None:
+    for rnd in range(rounds):
+        need = n_lo - len(kept) if rnd else n_hi
+        if need <= 0:
+            break
+        ask = user if not notes else (
+            user + f"\n\nAlready accepted: {[(i.spec['long'], i.spec['short']) for i in kept]}. These were "
+            f"rejected, with the reason: {notes[-14:]}. Propose {need + 4} NEW candidates that fix those "
+            "weaknesses: a dated catalyst inside the horizon and evidence on both legs.")
+        specs = _ask(llm, system, ask)
+        round_ideas: list[Idea] = []
+        per_sector = {}
+        for i in kept:
+            sec = uni.get(i.spec["long"], "")
+            per_sector[sec] = per_sector.get(sec, 0) + 1
         for spec in specs:
-            if len(picked) >= pool:
-                return
+            if len(round_ideas) >= need + 1:
+                break
             lg, sh = spec.get("long"), spec.get("short")
-            if lg not in uni or sh not in uni or lg == sh or (lg, sh) in open_pairs:
-                rejected.append(f"{lg}/{sh}: not in the universe or already open")
+            if (lg, sh) in tried:
                 continue
-            if lg in used or sh in used:
-                rejected.append(f"{lg}/{sh}: a leg is already used today")
+            tried.add((lg, sh))
+            if lg not in uni or sh not in uni or lg == sh:
+                notes.append(f"{lg}/{sh}: not in the universe")
+                continue
+            if {lg, sh} & (blocked | used):
+                notes.append(f"{lg}/{sh}: a leg was pitched recently or is already used")
                 continue
             st = pair_stats(prices.frame, lg, sh, stop_mult=stop_mult)
-            if not st or st.corr < corr_floor:
-                rejected.append(f"{lg}/{sh}: correlation {st.corr if st else 'n/a'}")
+            if not st or st.corr < min_corr:
+                notes.append(f"{lg}/{sh}: correlation {round(st.corr, 2) if st else 'n/a'} is too low")
                 continue
             sec = uni.get(lg, spec.get("sector", ""))
-            if per_sector.get(sec, 0) >= sector_cap:
-                rejected.append(f"{lg}/{sh}: already {sector_cap} ideas in {sec}")
+            if per_sector.get(sec, 0) >= max_sector:
+                notes.append(f"{lg}/{sh}: already {max_sector} ideas in {sec}")
                 continue
             weak = [k for k in ("what_it_is", "long_case", "short_case")
                     if not clean(spec.get(k, "") or "", claims_by_id, snap)[0].strip()]
             if weak:
-                rejected.append(f"{lg}/{sh}: no sourced case for {', '.join(weak)}")
+                notes.append(f"{lg}/{sh}: no sourced case for {', '.join(weak)}")
                 continue
-            if st.corr < min_corr and spec.get("conviction") == "High":
-                spec["conviction"], spec["conviction_reason"] = "Medium", "the pair's correlation is only moderate"
-            picked.append(Idea(spec, st, {}))
+            round_ideas.append(Idea(spec, st, {}))
             used.update({lg, sh})
             per_sector[sec] = per_sector.get(sec, 0) + 1
-
-    specs = _ask(llm, system, user)
-    consider(specs, min_corr, max_sector)
-    if len(picked) < n_lo:
-        log.info("Only %d ideas passed; asking for more", len(picked))
-        more = (f"\n\nThese candidates were rejected: {rejected[:12]}. Already accepted: "
-                f"{[(i.spec['long'], i.spec['short']) for i in picked]}. Give {n_lo - len(picked) + 3} new "
-                f"candidates from the pre-screened pairs, in sectors not yet used where possible.")
-        consider(_ask(llm, system, user + more), min_corr, max_sector)
-    if len(picked) < n_lo:          # last resort: relax the limits, and say so through conviction
-        consider(specs, floor_corr, max_sector + 1)
-    if min_against and not any(i.spec.get("against_consensus") for i in picked):
+        names.update(F.company_names(db, [t for i in round_ideas for t in (i.spec["long"], i.spec["short"])]))
+        for idea in round_ideas:
+            _finish(idea, settings, db, llm, prices, uni, claims_by_id, snap, cfg, today, names)
+            if idea.score >= min_score or idea.score == 0:
+                kept.append(idea)
+            else:
+                used.difference_update({idea.spec["long"], idea.spec["short"]})
+                notes.append(f"{idea.spec['long']}/{idea.spec['short']}: reviewer scored it {idea.score}/10: "
+                             f"{idea.critique}")
+                log.info("Dropped %s/%s after review (score %s): %s", idea.spec["long"], idea.spec["short"],
+                         idea.score, idea.critique)
+        if len(kept) >= n_lo:
+            break
+        log.info("Round %d: %d idea(s) cleared review so far", rnd + 1, len(kept))
+    if min_against and not any(i.spec.get("against_consensus") for i in kept):
         log.info("No against-consensus idea passed today")
-    if len(picked) < n_lo:
-        log.warning("Only %d trade ideas today", len(picked))
-    names = F.company_names(db, [t for i in picked for t in (i.spec["long"], i.spec["short"])])
-    for idea in picked:
-        _finish(idea, settings, db, llm, prices, uni, claims_by_id, snap, cfg, today, names)
-    # Keep the strongest: everything the reviewer scored 6+, topped up to the daily minimum.
-    min_score = int(cfg.get("min_review_score", 6))
-    ranked = sorted(picked, key=lambda i: -i.score)
-    keep = [i for i in ranked if i.score >= min_score or i.score == 0]
-    if len(keep) < n_lo:
-        keep = ranked[:n_lo]
-        for i in keep:             # kept only to reach the minimum: say so
-            if 0 < i.score < min_score:
-                _relabel_low(i, i.critique or "the reviewer found the evidence thin")
-    for i in ranked:
-        if i not in keep[:n_hi]:
-            log.info("Dropped %s/%s after review (score %s): %s", i.spec["long"], i.spec["short"], i.score, i.critique)
-    return keep[:n_hi]
+    if len(kept) < n_lo:
+        log.warning("Only %d trade ideas cleared review today", len(kept))
+    kept.sort(key=lambda i: -i.score)
+    return kept[:n_hi]
 
 
 def _peers(spec: dict, uni: dict[str, str], n: int) -> list[str]:
@@ -310,27 +401,36 @@ def _fmt_price(v: float) -> str:
     return f"{v:,.2f}" if v < 10000 else f"{v:,.0f}"
 
 
-def chart(prices: Prices, st: PairStats, target: float, long_name: str, short_name: str) -> bytes | None:
-    """A one-year chart of the spread with entry, target and stop marked."""
+def chart(pos: dict[str, dict], legs: list[tuple[str, str]]) -> bytes | None:
+    """How consensus EPS for this year and next has moved over 90 days, for each leg (indexed to 100)."""
+    series = []
+    for ticker, name in legs:
+        tr = (pos.get(ticker) or {}).get("eps_trend") or {}
+        for period, style in (("0y", "-"), ("+1y", "--")):
+            pts = tr.get(period)
+            if pts and pts[0] and all(v is not None for v in pts):
+                series.append((f"{name}, {'this year' if period == '0y' else 'next year'}", pts, style))
+    if not series:
+        return None
     try:
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
     except ImportError:
         return None
-    df = prices.frame[[st.long, st.short]].dropna().iloc[-253:]
-    if len(df) < 60:
-        return None
-    spread = np.log(df[st.long]) - st.beta * np.log(df[st.short])
-    rel = (np.exp(spread - st.spread_now) - 1) * 100       # % from today's level, hedged
-    fig, ax = plt.subplots(figsize=(7.2, 2.8), dpi=150)
-    ax.plot(rel.index, rel.values, color="#3b6ea5", lw=1.4)
-    for lvl, col, lab in ((0, "#555555", "Entry"), ((math.exp(target - st.spread_now) - 1) * 100, "#2e8b57", "Target"),
-                          ((math.exp(st.stop_spread - st.spread_now) - 1) * 100, "#c0392b", "Stop")):
-        ax.axhline(lvl, color=col, lw=1, ls="--")
-        ax.text(rel.index[0], lvl, f" {lab}", color=col, va="bottom", fontsize=8)
-    ax.set_title(f"Long {long_name} / short {short_name}: hedged spread, % from entry", fontsize=9, loc="left")
+    x = [-90, -60, -30, -7, 0]
+    fig, ax = plt.subplots(figsize=(7.2, 2.6), dpi=150)
+    colours = {legs[0][1]: "#2e8b57", legs[1][1] if len(legs) > 1 else "": "#c0392b"}
+    for label, pts, style in series:
+        idx = [v / pts[0] * 100 for v in pts]
+        col = next((c for n, c in colours.items() if n and label.startswith(n)), "#555555")
+        ax.plot(x, idx, style, color=col, lw=1.6, marker="o", ms=3, label=label)
+    ax.axhline(100, color="#999999", lw=0.8)
+    ax.set_xticks(x)
+    ax.set_xticklabels(["90 days ago", "60", "30", "7", "Today"], fontsize=7)
+    ax.set_title("Consensus EPS estimates over the last 90 days (indexed to 100)", fontsize=9, loc="left")
     ax.tick_params(labelsize=7)
+    ax.legend(fontsize=7, frameon=False, loc="best")
     for side in ("top", "right"):
         ax.spines[side].set_visible(False)
     ax.grid(axis="y", alpha=0.2)
@@ -372,7 +472,8 @@ def _finish(idea: Idea, settings: Settings, db: DB, llm, prices: Prices, uni: di
         q = prices.quote(t)
         if q and not pos[t].get("price"):
             pos[t]["price"] = q.last
-    pos_md = POS.table([(ln, lg, pos[lg], rows.get(lg, {}), med), (sn, sh, pos[sh], rows.get(sh, {}), med)])
+    pos_md = POS.table([(ln, lg, pos[lg], rows.get(lg, {}), med), (sn, sh, pos[sh], rows.get(sh, {}), med)],
+                       entry=(st.entry_long, st.entry_short), hedge=st.beta)
 
     # Second pass: review and sharpen with the data in front of the reviewer
     tick = {lg, sh}
@@ -414,59 +515,47 @@ def _finish(idea: Idea, settings: Settings, db: DB, llm, prices: Prices, uni: di
         cats = [texts["catalyst"].rstrip(".")]
     idea.problems = problems
     idea.texts = {**texts, "catalysts": cats}
-    idea.chart = chart(prices, st, idea.target_spread, ln, sn)
+    idea.chart = chart(pos, [(lg, ln), (sh, sn)])
 
-    conv = spec.get("conviction", "Medium")
-    conv_txt = f'<span color="{CONVICTION_COLOR.get(conv, "gray")}">{conv}</span>'
-    if spec.get("conviction_reason"):
-        conv_txt += f" ({spec['conviction_reason'].rstrip('.')})"
     end = date.fromisoformat(idea.horizon_end).strftime("%-d %b")
-    horizon = f"{cfg.get('max_holding_trading_days', 20)} trading days (to {end})"
     tgt = f"{idea.target_return * 100:+.1f}%".replace("-", "−")
     stp = f"{idea.stop_return * 100:+.1f}%".replace("-", "−")
-    entry = (f"{ln} {_fmt_price(st.entry_long)} / {sn} {_fmt_price(st.entry_short)} "
-             f"({st.beta:.2f} of {sn} short per 1 of {ln} long)")
     dash = (settings.get("notion.pages", {}) or {}).get("dashboard")
+    setup = POS.table([(ln, lg, pos[lg], rows.get(lg, {}), med), (sn, sh, pos[sh], rows.get(sh, {}), med)],
+                      entry=(st.entry_long, st.entry_short), hedge=st.beta)
     lines = [
         "::: callout 📈 gray",
         f"**Long {ln} · Short {sn}** — {spec.get('headline', '').rstrip('.')}",
         f"**The trade:** {texts['what_it_is']}",
     ]
     if texts.get("variant_consensus") and texts.get("variant_ours"):
-        lines.append(f"**What the market thinks:** {texts['variant_consensus']} **What we think:** {texts['variant_ours']}")
+        lines += [f"**What the market thinks:** {texts['variant_consensus']}",
+                  f"**What we think:** {texts['variant_ours']}"]
     lines += [
-        f"**Why {sn} (short):** {texts['short_case']}",
         f"**Why {ln} (long):** {texts['long_case']}",
+        f"**Why {sn} (short):** {texts['short_case']}",
     ]
     if cats:
         lines.append("**Catalysts:** " + " · ".join(cats) + ".")
     lines += [
         f"**What would prove it wrong:** {texts['wrong_if']}",
-        "| Entry | Target | Stop | Horizon | Conviction |",
-        "|---|---|---|---|---|",
-        f"| {entry} | <span color=\"green\">{tgt}</span> hedged ({idea.target_label}) | <span color=\"red\">{stp}</span> "
-        f"(spread falls a further {cfg.get('stop_spread_vol_multiple', 1.5)}× its 60-day volatility) | {horizon} | {conv_txt} |",
-        pos_md,
+        f"🎯 **Target** <span color=\"green\">{tgt}</span> · 🛑 **Stop** <span color=\"red\">{stp}</span> · "
+        f"⏳ **Horizon** {end}",
+        f"*Returns are on the hedged pair. Target: {idea.target_label}. Stop: the spread falls a further "
+        f"{cfg.get('stop_spread_vol_multiple', 1.5)}× its 60-day volatility.*",
+        "",
+        setup,
+        "",
+        "{{chart}}",
         "::: toggle Comps",
         idea.comps["markdown"],
         ":::",
-        "{{chart}}",
         ("→ Tick **Following** to track this idea, or **Build out** for a model and deeper due diligence, in the "
          + (f"[Trade idea dashboard](notion:{dash})" if dash else "Ideas database") + "."),
         ":::",
     ]
     idea.markdown = "\n".join(lines)
     idea.pitch = idea.markdown
-
-
-def _relabel_low(idea: Idea, reason: str) -> None:
-    import re
-    old = re.search(r"\| <span color=\"\w+\">(Low|Medium|High)</span>[^|]*\|$", idea.markdown, re.M)
-    new = f'| <span color="gray">Low</span> ({reason.rstrip(".")}) |'
-    if old:
-        idea.markdown = idea.markdown[:old.start()] + new + idea.markdown[old.end():]
-        idea.pitch = idea.markdown
-    idea.spec["conviction"] = "Low"
 
 
 def _nice_date(s: str) -> str:

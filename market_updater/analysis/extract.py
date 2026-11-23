@@ -136,3 +136,42 @@ def claim_dict(row: Any) -> dict:
             except json.JSONDecodeError:
                 d[k] = []
     return d
+
+
+EPISODE_SYSTEM = """You summarise one long podcast episode, video or research piece for a buy-side reader who
+will not listen to it. Return JSON:
+- who: the host and guests with their roles, e.g. "Scott Galloway (host) with Aswath Damodaran (NYU Stern)".
+- points: 4 to 7 bullets, each one specific argument, forecast or piece of evidence, attributed to the
+  person who made it, with any numbers they gave, e.g. "Damodaran: Nvidia's price implies $X of revenue
+  by 2030, which needs ...". Skip small talk, ads and anything that only repeats market moves or
+  headlines the reader already knows.
+- worth_it: one sentence on whether it is worth the reader's full time and which part.
+Use only what is in the text. Never invent numbers."""
+
+EPISODE_SCHEMA = {
+    "type": "object",
+    "properties": {"who": {"type": "string"}, "points": {"type": "array", "items": {"type": "string"}},
+                   "worth_it": {"type": "string"}},
+    "required": ["who", "points", "worth_it"],
+}
+
+
+def summarise_long_items(db: DB, llm, limit: int = 12) -> int:
+    """Write a point-by-point summary of new podcast episodes and long research pieces."""
+    rows = db.q("SELECT id, title, source_name, kind, source_type, text FROM items WHERE summary IS NULL "
+                "AND ((kind='podcast' AND length(text) > 8000) OR (source_type IN ('substack','web_page','email') "
+                "AND length(text) > 15000)) ORDER BY published DESC LIMIT ?", (limit,))
+    n = 0
+    for r in rows:
+        try:
+            res = llm.json(tier="extract", purpose="episode_summary", system=EPISODE_SYSTEM,
+                           user=f"{r['source_name']}: {r['title']}\n\n{truncate(r['text'], 120_000)}",
+                           schema=EPISODE_SCHEMA, max_tokens=1500)
+        except Exception as e:
+            log.warning("Summary failed for %s: %s", r["title"], e)
+            continue
+        db.ex("UPDATE items SET summary=? WHERE id=?", (json.dumps(res, ensure_ascii=False), r["id"]))
+        n += 1
+    if rows:
+        log.info("Summarised %d long episodes and pieces", n)
+    return n

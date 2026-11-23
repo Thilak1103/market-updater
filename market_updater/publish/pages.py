@@ -111,12 +111,17 @@ def push_views(notion: N.Notion, db: DB) -> int:
     return n
 
 
+CITE_RE = __import__("re").compile(r"\s?\[c\d+\]")
+
+
 def _idea_props(r) -> dict:
     return {k: v for k, v in {
         "Return so far": N.number(round(r["pnl"] or 0, 4)), "Status": N.select(r["status"]),
         "Outcome": N.select(r["outcome"] or "Open"),
         "Best so far": N.number(round(r["best"] or 0, 4)), "Worst so far": N.number(round(r["worst"] or 0, 4)),
         "Progress to target": N.number(round((r["pnl"] or 0) / r["target_return"], 3)) if r["target_return"] else None,
+        "Thesis check": N.select(r["thesis_status"]) if r["thesis_status"] else None,
+        "Thesis note": N.rich(truncate(CITE_RE.sub("", r["thesis_note"] or ""), 1900)) if r["thesis_note"] else None,
     }.items() if v is not None}
 
 

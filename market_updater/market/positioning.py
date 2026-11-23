@@ -55,6 +55,13 @@ def fetch(ticker: str) -> dict:
             out["eps_down_30d"] = int(row.get("downLast30days", row.get("downLast30Days", 0)) or 0)
     except Exception as e:
         log.debug("yfinance revisions for %s failed: %s", ticker, e)
+    try:
+        tr = t.eps_trend
+        if tr is not None and len(tr):
+            cols = ["90daysAgo", "60daysAgo", "30daysAgo", "7daysAgo", "current"]
+            out["eps_trend"] = {p: [_num(tr.loc[p].get(c)) for c in cols] for p in ("0y", "+1y") if p in tr.index}
+    except Exception as e:
+        log.debug("yfinance EPS trend for %s failed: %s", ticker, e)
     return out
 
 
@@ -103,30 +110,40 @@ def _ratings(p: dict) -> str:
     return "–"
 
 
-def table(legs: list[tuple[str, str, dict, dict, dict]]) -> str:
-    """Markdown table: one column per leg. Each leg is (label, ticker, positioning, own comps, peer medians)."""
+def table(legs: list[tuple[str, str, dict, dict, dict]], entry: tuple[float, float] | None = None,
+          hedge: float | None = None) -> str:
+    """The trade set-up: one column per leg. Each leg is (name, ticker, positioning, own comps, peer medians)."""
     rows: dict[str, list[str]] = {k: [] for k in (
-        "Price", "Value at peer multiple", "Street target", "Analysts", "EPS revisions (30 days)",
-        "Short interest", "Next earnings")}
-    for label, ticker, p, own, med in legs:
-        price = p.get("price")
-        rows["Price"].append(f"{price:,.2f}" if price else "–")
+        "Entry price", "Position", "Value at peers' multiple", "Street target", "Analysts",
+        "EPS revisions, 30 days", "Short interest", "Next earnings")}
+    for i, (label, ticker, p, own, med) in enumerate(legs):
+        price = (entry[i] if entry and i < len(entry) else None) or p.get("price")
+        rows["Entry price"].append(f"{price:,.2f}" if price else "–")
+        if hedge is not None:
+            rows["Position"].append("Long 1.00" if i == 0 else f"Short {hedge:.2f}")
         val, basis = peer_value(price, own, med)
-        rows["Value at peer multiple"].append(
-            f"{val:,.2f} ({_fmt_pct((val / price - 1) * 100)}, on {basis})" if val and price else "–")
+        rows["Value at peers' multiple"].append(
+            f"{val:,.2f} ({_fmt_pct((val / price - 1) * 100)}, {basis})" if val and price else "–")
         tgt = p.get("target_mean")
         rows["Street target"].append(f"{tgt:,.2f} ({_fmt_pct((tgt / price - 1) * 100)})" if tgt and price else "–")
         rows["Analysts"].append(_ratings(p))
         up, dn = p.get("eps_up_30d"), p.get("eps_down_30d")
-        rows["EPS revisions (30 days)"].append(f"{up} up / {dn} down" if up is not None and dn is not None else "–")
+        rows["EPS revisions, 30 days"].append(f"{up} up, {dn} down" if up is not None and dn is not None else "–")
         si, dtc = p.get("short_pct_float"), p.get("days_to_cover")
         rows["Short interest"].append(
-            (f"{si * 100:.1f}% of float" if si is not None else "–") + (f", {dtc:.1f} days to cover" if dtc else ""))
-        rows["Next earnings"].append(p.get("next_earnings") or "–")
+            (f"{si * 100:.1f}% of float" if si is not None else "–") + (f" ({dtc:.1f} days)" if dtc and si is not None else ""))
+        rows["Next earnings"].append(_short_date(p.get("next_earnings")) or "–")
     roles = ["long", "short"]
-    head = "| | " + " | ".join(f"{leg[0]} ({roles[i] if i < 2 else 'peer'})" for i, leg in enumerate(legs)) + " |"
+    head = "| | " + " | ".join(f"**{leg[0]}** ({roles[i] if i < 2 else 'peer'})" for i, leg in enumerate(legs)) + " |"
     lines = [head, "|---|" + "---|" * len(legs)]
     for k, vals in rows.items():
-        if any(v not in ("–", "– ") for v in vals):
+        if vals and any(v != "–" for v in vals):
             lines.append(f"| {k} | " + " | ".join(vals) + " |")
     return "\n".join(lines)
+
+
+def _short_date(s: str | None) -> str:
+    try:
+        return date.fromisoformat((s or "")[:10]).strftime("%-d %b %Y")
+    except ValueError:
+        return s or ""

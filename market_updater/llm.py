@@ -104,12 +104,19 @@ class LLM:
         tool = {"name": "submit", "description": "Submit the structured result.", "input_schema": schema}
         kwargs = dict(model=model, max_tokens=max_tokens, system=system,
                       messages=[{"role": "user", "content": user}], tools=[tool])
-        try:
-            resp = self._anthropic.messages.create(**kwargs, tool_choice={"type": "tool", "name": "submit"})
-        except Exception as e:
-            # Some models (e.g. Opus with extended thinking on by default) refuse a forced tool.
-            if "tool_choice" not in str(e):
-                raise
+        # Some models (e.g. with extended thinking on by default) refuse a forced tool. Remember
+        # which ones, so later calls go straight to "auto" instead of failing once each time.
+        no_force = getattr(self, "_no_forced_tool", set())
+        self._no_forced_tool = no_force
+        resp = None
+        if model not in no_force:
+            try:
+                resp = self._anthropic.messages.create(**kwargs, tool_choice={"type": "tool", "name": "submit"})
+            except Exception as e:
+                if "tool_choice" not in str(e):
+                    raise
+                no_force.add(model)
+        if resp is None:
             kwargs["system"] = system + "\n\nRespond only by calling the `submit` tool once."
             resp = self._anthropic.messages.create(**kwargs, tool_choice={"type": "auto"})
         self._log_claude(model, resp, purpose)

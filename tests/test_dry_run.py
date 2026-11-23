@@ -56,6 +56,7 @@ def test_friday_dry_run_builds_every_section(settings, db, fake_prices, monkeypa
     res = R.daily(dry_run=True, settings=settings, db=db, llm=llm, prices=fake_prices, notion=None,
                   now=now, collect=False)
     md = res.markdown
+    assert "| Worth watching |" in res.markdown
     for heading in ["## ☀️ Top line", "## 📊 The numbers that matter", "## 🎯 Trade ideas", "## 🏭 Your sectors",
                     "## 📅 Earnings reviews", "## 🌍 Elsewhere", "## 🏁 Trade idea scorecard"]:
         assert heading in md, heading
@@ -68,24 +69,21 @@ def test_friday_dry_run_builds_every_section(settings, db, fake_prices, monkeypa
     slok = db.one("SELECT c.speaker, i.url FROM claims c JOIN items i ON i.id=c.item_id WHERE c.speaker='Torsten Slok'")
     assert slok and slok["url"] == "https://apolloacademy.com/ai"
     # Three ideas: the bad pair and the reused leg are rejected; an invented peer is dropped from comps
-    assert md.count("::: callout 📈 gray") == 3 and "NOTREAL" not in md
+    assert md.count("::: callout 📈 gray") == 2 and "NOTREAL" not in md
     assert "**Long Nvidia · Short AMD**" in md and "Why AMD (short):" in md and "Why Nvidia (long):" in md
     assert "Mkt cap" not in md and "ROIC" not in md and "EV/EBITDA" in md and "P/E fwd" in md
     assert "Hedge ratio" not in md and "Statistics" not in md and "The pair isolates" not in md
     # The review pass: variant view, dated catalysts, positioning table; the weakest idea is dropped
     assert "**What the market thinks:**" in md and "**What we think:**" in md
     assert "**Catalysts:** 17 Dec: Results day" in md and "Invented catalyst" not in md
-    assert "| Short interest | 3.2% of float, 1.5 days to cover |" in md and "15 buy / 6 hold / 1 sell" in md
-    assert "Value at peer multiple" in md and "Build out" in md
-    # Only three candidates passed, so the weak one stays, labelled Low and placed last
-    last = md[md.rindex("::: callout 📈 gray"):]
-    assert "Goldman Sachs" in last and '<span color="gray">Low</span> (Thin evidence on the short leg)' in last
-    assert "trading days (to " in md and "hedged" in md
+    assert "| Short interest | 3.2% of float (1.5 days) |" in md and "15 buy / 6 hold / 1 sell" in md
+    assert "Value at peers' multiple" in md and "| Position | Long 1.00 | Short " in md and "Build out" in md
+    assert "🎯 **Target**" in md and "🛑 **Stop**" in md and "⏳ **Horizon**" in md and "Conviction" not in md
     assert "Fee income" not in md          # the long case with an unsourced number was cut
     assert "TSCO.L" in md
-    assert "Only " not in md                # three ideas passed, so no shortfall note
-    gs = md[md.index("**Long Goldman Sachs"):]
-    assert "TSCO.L" not in gs.split(":::")[2]   # a peer from another sector is kept out of the comps
+    # The reviewer scored Goldman/Morgan Stanley 3/10, so it is not pitched at all, even though
+    # that leaves only two ideas
+    assert "Goldman Sachs" not in md and "Only 2 ideas passed" in md
     # Elsewhere is a table with a cause, and the sectors are one-paragraph callouts
     assert "| Sector | Move | What's behind it |" in md and "Oil supply news moved the group" in md
     assert "::: callout 💻 blue" in md and "**TMT** — Voices are turning bearish" in md

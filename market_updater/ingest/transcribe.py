@@ -64,8 +64,14 @@ def _split(path: Path, workdir: Path) -> list[Path]:
     return parts
 
 
-def transcribe_url(audio_url: str, api_key: str | None = None) -> tuple[str, float]:
-    """Return (transcript text, audio seconds)."""
+SPEED = float(os.environ.get("MU_AUDIO_SPEED", "1.4"))   # Whisper copes well with sped-up speech
+
+
+def transcribe_url(audio_url: str, api_key: str | None = None, speed: float = SPEED) -> tuple[str, float]:
+    """Return (transcript text, audio seconds sent to Groq).
+
+    Speech is sped up (1.4x by default) before upload: Groq bills and rate-limits by audio
+    seconds, so this fits about 40% more listening into the free allowance."""
     api_key = api_key or os.environ.get("GROQ_API_KEY")
     if not api_key:
         raise TranscriptionError("GROQ_API_KEY not set")
@@ -76,7 +82,8 @@ def transcribe_url(audio_url: str, api_key: str | None = None) -> tuple[str, flo
         raw = tmpd / "raw"
         _download(audio_url, raw)
         small = tmpd / "speech.mp3"
-        _run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(raw), "-ac", "1", "-ar", "16000",
+        tempo = ["-filter:a", f"atempo={speed}"] if speed and abs(speed - 1) > 0.01 else []
+        _run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(raw), *tempo, "-ac", "1", "-ar", "16000",
               "-b:a", "32k", str(small)])
         seconds = duration_seconds(small)
         texts = []
