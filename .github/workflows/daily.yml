@@ -7,7 +7,19 @@ on:
     # GitHub cron is UTC. Two entries cover GMT and BST; the guard step keeps the right one.
     - cron: "5 4 * * 1-5"    # 04:05 UTC = 05:05 BST
     - cron: "5 5 * * 1-5"    # 05:05 UTC = 05:05 GMT
+  # Also started at exactly 05:05 London by an outside timer (cron-job.org), because GitHub's own
+  # scheduler can start runs hours late or skip them at busy times. Whichever comes first runs;
+  # any later start that day sees the briefing is already out and stops.
   workflow_dispatch:
+    inputs:
+      wait:
+        description: "Wait until 06:10 London before writing (the outside timer sets this)"
+        type: boolean
+        default: false
+      rerun:
+        description: "Run again even if today's briefing is already out"
+        type: boolean
+        default: false
 concurrency: {group: briefing, cancel-in-progress: false}
 jobs:
   brief:
@@ -52,16 +64,21 @@ jobs:
         run: |
           sudo apt-get install -y ffmpeg
           pip install -r requirements.txt
+      - name: Skip if today's briefing is already out
+        id: check
+        if: steps.guard.outputs.go && !inputs.rerun
+        run: |
+          if python -m market_updater published-today; then echo "done=1" >> "$GITHUB_OUTPUT"; fi
       - name: Collect
-        if: steps.guard.outputs.go
+        if: steps.guard.outputs.go && !steps.check.outputs.done
         run: python -m market_updater collect --force
       - name: Wait for the 06:10 snapshot
-        if: steps.guard.outputs.go && github.event_name == 'schedule'
+        if: steps.guard.outputs.go && !steps.check.outputs.done && (github.event_name == 'schedule' || inputs.wait)
         run: |
           now=$(date +%s); target=$(TZ=Europe/London date -d "06:10" +%s)
           if [ "$target" -gt "$now" ]; then sleep $((target - now)); fi
       - name: Write and publish
-        if: steps.guard.outputs.go
+        if: steps.guard.outputs.go && !steps.check.outputs.done
         run: python -m market_updater run --force
       - name: Show today's briefing on the run page
         if: always() && steps.guard.outputs.go
