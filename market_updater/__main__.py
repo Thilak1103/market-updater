@@ -3,6 +3,7 @@
 Commands
   collect         05:00 stage: fetch sources, transcribe, extract claims
   run             Build and publish today's briefing (weekdays only unless --force)
+  check-inbox     Log in to the newsletter inbox and list what arrived in the last 72 hours
   published-today Exit 0 if today's briefing is already published (used to skip late duplicate runs)
   dry-run         Build today's briefing without publishing; writes data/out/<date>.md
   health          Alert by Telegram if today's briefing is missing
@@ -73,13 +74,18 @@ def main(argv: list[str] | None = None) -> int:
                     ", ".join(fixed))
     p = argparse.ArgumentParser(prog="market_updater")
     p.add_argument("command", choices=["collect", "run", "dry-run", "health", "weekly", "discover",
-                                       "export-settings", "check-sources", "sync-sources", "published-today"])
+                                       "export-settings", "check-sources", "sync-sources", "published-today", "check-inbox"])
     p.add_argument("--force", action="store_true", help="Run even at weekends")
     p.add_argument("--no-collect", action="store_true", help="Skip fetching sources (reuse the database)")
     a = p.parse_args(argv)
 
     from . import run as R
 
+    if a.command == "check-inbox":
+        from .ingest.email_inbox import check_inbox
+        from .settings import load
+        print(check_inbox(load()))
+        return 0
     if a.command == "published-today":
         done = R.published_today()
         print("Today's briefing is already published." if done else "No briefing published yet today.")

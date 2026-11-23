@@ -149,7 +149,7 @@ def collect_all(settings: Settings, db: DB, notion=None, now: datetime | None = 
             log.warning("Source %s failed: %s", src.name, e)
 
     try:
-        collected += fetch_inbox(settings)
+        collected += fetch_inbox(settings, since_dt=since)   # back to Friday evening on a Monday
     except Exception as e:
         log.warning("Email inbox failed: %s", e)
 
