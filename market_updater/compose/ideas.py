@@ -249,7 +249,7 @@ def shortlist(settings: Settings, prices: Prices, uni: dict[str, str], min_corr:
 
 
 def _context(settings: Settings, states: list[DebateState], claims: list[dict], reports: list,
-             snap: Snapshot) -> tuple[str, dict[int, dict]]:
+             snap: Snapshot, db: DB | None = None, today: date | None = None) -> tuple[str, dict[int, dict]]:
     people = settings.people
     idea_sources = {s.name.lower() for s in settings.sources if s.ideas or s.contrarian}
     pitches = [c for c in claims if (c.get("source_name") or "").lower() in idea_sources and c.get("tickers")]
@@ -266,6 +266,11 @@ def _context(settings: Settings, states: list[DebateState], claims: list[dict], 
     text = ("Debates:\n" + "\n".join(blocks) + "\n\nEarnings reactions:\n" + "\n".join(rep_lines)
             + "\n\nSector and stock triggers:\n" + "\n".join(trig)
             + "\n\nMaterial:\n" + "\n".join(claim_line(c, people) for c in chosen))
+    if db is not None:
+        from ..analysis import memory as MEM
+        mem = MEM.context(db, today or date.today())
+        if mem:
+            text += "\n\nWhat the briefing has learned so far:\n" + mem
     return text, {c["id"]: c for c in chosen}
 
 
@@ -306,7 +311,7 @@ def generate(settings: Settings, db: DB, llm, prices: Prices, states: list[Debat
     pair_txt = "\n".join(f"- {p.long} / {p.short} ({uni.get(p.long)}): corr {p.corr:.2f}; spread z-score "
                          f"{p.zscore_60:+.1f} for long {p.long} / short {p.short} (reverse the sign for the "
                          f"opposite trade)" for p in pairs) or "(none passed today)"
-    ctx, claims_by_id = _context(settings, states, claims, reports, snap)
+    ctx, claims_by_id = _context(settings, states, claims, reports, snap, db, today)
     user = (f"Universe (ticker: sector): {json.dumps(uni)}\n\nPre-screened pairs:\n{pair_txt}\n\n"
             f"Recently pitched or still open, so NOT allowed in either leg: {sorted(blocked)}\n\n{ctx}")
     system = P.IDEAS_SYSTEM.format(min_against=min_against, n_candidates=8, n_final=n_hi)

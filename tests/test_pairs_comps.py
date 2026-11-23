@@ -62,3 +62,19 @@ def test_no_repeats_and_book_table(db):
             "max_days": 20, "progress": 0.3, "following": True, "reason": None}]
     md = I.book_markdown([dict(upd[0], thesis_status="Needs a tweak", thesis_note="Catalyst moved to January.")], upd, "abc")
     assert "| ⭐ Long JPM / short BAC | 4 of 20 |" in md and "Needs a tweak" in md and "Catalyst moved" in md
+
+
+def test_memory_track_record(db, fake_prices, settings):
+    from datetime import date
+    from market_updater.analysis import memory as MEM
+    fake_prices.load(["NVDA", "SMH", "AMD"])
+    claims = [{"id": i, "tickers": ["NVDA"], "stance": "bull", "kind": "opinion", "speaker": "Vik Sekar",
+               "source_name": "Vik's Newsletter", "claim": "Nvidia's HBM supply is the bottleneck"} for i in range(1, 7)]
+    claims.append({"id": 99, "tickers": ["NVDA", "AMD"], "stance": "bull", "kind": "opinion", "speaker": "X"})
+    assert MEM.record_calls(settings, db, claims, fake_prices, date(2026, 11, 20)) == 6
+    old = str(fake_prices.frame.index[-60].date())
+    db.ex("UPDATE calls SET date=?", (old,))
+    assert MEM.score_calls(db, fake_prices) == 6
+    tr = MEM.track_record(db)
+    assert tr and tr[0]["voice"] == "Vik Sekar" and tr[0]["n"] == 6
+    assert "Vik Sekar" in MEM.context(db, date(2026, 11, 20)) and "| Vik Sekar | 6 |" in MEM.scorecard_markdown(db)

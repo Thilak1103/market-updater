@@ -127,6 +127,9 @@ def daily(*, dry_run: bool = False, settings: Settings | None = None, db: DB | N
     if notion is not None and not dry_run:
         _step("sync following", problems, PG.sync_following, notion, db)
     idea_updates = _step("idea updates", problems, I.update_open, db, prices, settings, day, default=[]) or []
+    from .analysis import memory as MEM
+    _step("record calls", problems, MEM.record_calls, settings, db, claims, prices, day, default=0)
+    _step("judge calls", problems, MEM.score_calls, db, prices, default=0)
     ideas = _step("trade ideas", problems, I.generate, settings, db, llm, prices, states, claims, reports, snap,
                   day, default=[]) or []
     checks = _step("thesis check", problems, I.thesis_check, llm, db, settings, claims, snap, idea_updates, day,
@@ -333,7 +336,11 @@ def assemble(settings, day, snap, story, ideas, idea_updates, core, reviews, els
 
     # Friday scorecard
     if is_friday(day):
+        from .analysis import memory as MEM
         add("🏁 Trade idea scorecard", I.scorecard(db))
+        add("🗣 Who has been right", "*Every bullish or bearish call your sources make on a stock we track is "
+            "judged after 20 trading days against its sector ETF. The trade ideas lean on the voices with the "
+            "best record.*\n" + MEM.scorecard_markdown(db))
 
     # Footer: links to the reading pages
     links = [f"{S.ICONS.get(o.sector.key, '')} [{o.sector.name}](notion:{_page_id(o.reading_url)})"

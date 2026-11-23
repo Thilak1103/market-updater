@@ -77,10 +77,10 @@ def update_home(notion: N.Notion, settings, day: date, briefing_id: str, headlin
 def sync_following(notion: N.Notion, db: DB) -> int:
     """Copy the Following ticks from the Ideas database into SQLite. Returns how many are followed."""
     ticked = {p["id"] for p in notion.query("ideas", filter={"property": "Following", "checkbox": {"equals": True}})}
-    for r in db.q("SELECT id, notion_page_id, following FROM ideas WHERE notion_page_id IS NOT NULL"):
-        want = int(r["notion_page_id"] in ticked)
-        if want != (r["following"] or 0):
-            db.ex("UPDATE ideas SET following=? WHERE id=?", (want, r["id"]))
+    built = {p["id"] for p in notion.query("ideas", filter={"property": "Build out", "checkbox": {"equals": True}})}
+    for r in db.q("SELECT id, notion_page_id FROM ideas WHERE notion_page_id IS NOT NULL"):
+        db.ex("UPDATE ideas SET following=?, build_out=? WHERE id=?",
+              (int(r["notion_page_id"] in ticked), int(r["notion_page_id"] in built), r["id"]))
     return len(ticked)
 
 
