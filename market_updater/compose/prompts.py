@@ -28,10 +28,11 @@ You write the opening of a daily buy-side briefing for a contrarian reader. Retu
   the cause, with citations. Order by market impact. Cover the main asset classes that moved
   (equities, rates, oil, gold, FX, credit) and the stories that moved them. Skip anything that
   did not move markets.
-- so_what: for EVERY row of the key-numbers table, a note of at most twelve words saying what
-  the move means or what caused it, e.g. "AI unwind; Nvidia is down 34% in a month", "Credit
-  is widening slowly; watch private credit", "Next Fed meeting is 17 Dec". Key it by the row's
-  name exactly as given. If a row did not really move, say what it signals instead.
+- so_what: one entry for EVERY row of the key-numbers table, in the same order, with "name"
+  copied exactly from the table and "note": at most twelve words on what the move means or what
+  caused it, e.g. "AI unwind; Nvidia is down 34% in a month", "Credit is widening slowly; watch
+  private credit", "Hike risk: Waller wants 50bp in December". Never leave a note empty: if a
+  row barely moved, say what it signals.
 """
 
 MARKET_STORY_SCHEMA = {
@@ -41,7 +42,8 @@ MARKET_STORY_SCHEMA = {
         "mood": {"type": "string", "enum": ["risk_off", "risk_on", "mixed"]},
         "bullets": {"type": "array", "items": {"type": "object", "properties": {
             "lead": {"type": "string"}, "text": {"type": "string"}}, "required": ["lead", "text"]}},
-        "so_what": {"type": "object", "additionalProperties": {"type": "string"}},
+        "so_what": {"type": "array", "items": {"type": "object", "properties": {
+            "name": {"type": "string"}, "note": {"type": "string"}}, "required": ["name", "note"]}},
     },
     "required": ["headline", "mood", "bullets", "so_what"],
 }
@@ -52,10 +54,13 @@ You cover {sector} (sub-sectors: {subsectors}) for a daily buy-side briefing. Re
 - blurb: two or three sentences, at most {words} words, on the biggest moves in the sector today
   and WHY they happened, with citations. Lead with the move that matters most. No bullet points.
 - reading: the pieces worth the reader's time, best first, at most {max_items}. Pick from the
-  numbered items given. Prefer original research, newsletters and podcasts with a real argument
-  over generic news; skip clickbait ("X stock could be 47% undervalued"), pieces with no named
-  author or analyst, and repeats. For each: "item" (its number) and "summary", one or two
-  sentences on the argument or the news and why it matters. Cite with [cN].
+  numbered items given. Prefer original research, newsletters and podcast interviews with a real
+  argument over generic news; skip clickbait ("X stock could be 47% undervalued"), pieces with no
+  named author or analyst, repeats, and daily news-recap shows unless they carry an interview with
+  something new. For each: "item" (its number), "summary" (one sentence: the argument and why it
+  matters to this sector) and, for podcasts, videos and long research, "points": three to five
+  bullets on the specific arguments, each attributed to the person who made it, with their
+  numbers. Never restate the sector's price moves; the reader has them. Cite with [cN].
 - filtered: one short sentence describing what you left out and why, or "" if nothing.
 """
 
@@ -64,7 +69,8 @@ SECTOR_SCHEMA = {
     "properties": {
         "blurb": {"type": "string"},
         "reading": {"type": "array", "items": {"type": "object", "properties": {
-            "item": {"type": "integer"}, "summary": {"type": "string"}}, "required": ["item", "summary"]}},
+            "item": {"type": "integer"}, "summary": {"type": "string"},
+            "points": {"type": "array", "items": {"type": "string"}}}, "required": ["item", "summary"]}},
         "filtered": {"type": "string"},
     },
     "required": ["blurb", "reading", "filtered"],
@@ -102,8 +108,15 @@ heading into a buy-side career. Ideas are for research, not advice.
 Each idea is a pair: long one stock and short a peer or the sector ETF, so the trade isolates a
 view rather than market direction. Choose ONLY from the pre-screened pairs given (they already
 pass the correlation test), unless the material makes a compelling case for a different pair from
-the universe. Every idea must be strong: a specific, evidenced reason why the long should beat the
-short over the next month. There is always an opportunity somewhere; look across all sectors.
+the universe. Never use a stock listed as recently pitched or still open: the reader has seen it.
+
+Only pitch ideas you would defend at an investment committee. Each needs ALL of:
+- a variant view: something specific the market is mispricing, not a restatement of the news;
+- evidence on BOTH legs from the material (a pitch with one strong leg and a filler leg fails);
+- a reason it plays out within a month, ideally a dated catalyst;
+- internal consistency: do not pitch "the spread reverts" when the move came from news that
+  changed the company's fundamentals, and prefer a peer short over an ETF that holds the long.
+Look across every sector, not just today's headline story; there is always an opportunity.
 
 Prefer, in order: a crowded consensus with credible dissent; a narrative that is cracking; an
 earnings reaction out of line with what the call said; a priority voice changing view; a pitch
@@ -116,8 +129,8 @@ statistics given for the pair (z-score, correlation) and the valuations, but do 
 statistics; they are shown separately. Ground every claim in the cited material [cN]; use only
 numbers from the material or the tables.
 
-Return {n_candidates} candidates ranked best first. The code re-checks the statistics and keeps
-the best {n_final}. Rate conviction honestly: High only when the evidence is strong on both legs.
+Return {n_candidates} candidates ranked best first. The code re-checks the statistics, a sceptical
+reviewer scores each one, and only those scoring 7/10 or more are pitched (at most {n_final}).
 """
 
 IDEAS_SCHEMA = {
@@ -196,14 +209,17 @@ Rewrite the pitch so it would survive a buy-side investment committee, and score
 - variant_ours: one or two sentences on what we believe instead and why the market is wrong. If the
   trade is WITH consensus, say what the market is still underestimating.
 - long_case / short_case: two or three sentences each, with [cN] citations and numbers from the
-  tables. Each leg must stand on its own evidence.
+  tables. Each leg must stand on its own evidence. These argue FOR the trade: put weaknesses only
+  in the critique and the score, never in the cases.
 - catalysts: up to three dated events inside the next {days} trading days (to {end}) that should
   force a re-pricing, e.g. an earnings date from the calendar, a data release, a court ruling.
   Use {{"date": "YYYY-MM-DD" or "early Dec", "event": "..."}}. Never invent a date.
 - wrong_if: the specific evidence that would make us close the trade.
 - conviction (Low, Medium, High) and conviction_reason (a few words).
-- score: 1-10 for how strong this is as a one-month pair trade. 8+ means real edge, a clear
-  catalyst and evidence on both legs; 5 or below means the market probably already knows.
+- score: 1-10 for how strong this is as a one-month pair trade. Only 7 or more gets pitched.
+  7+ means a real variant view, evidence on both legs and a reason it plays out within the month;
+  5 or below means the market probably already knows, one leg is filler, or the target relies
+  on a spread reverting after news that changed the fundamentals. Be strict.
 - critique: one sentence, the biggest weakness.
 
 Use only numbers that appear in the material or tables. Never write about your inputs.
@@ -226,4 +242,28 @@ SHARPEN_SCHEMA = {
     },
     "required": ["variant_consensus", "variant_ours", "long_case", "short_case", "catalysts", "wrong_if",
                  "conviction", "score"],
+}
+
+THESIS_CHECK = STYLE + """
+You check the open pair trades in a research book each morning. For each idea you get the
+original thesis, what would prove it wrong, its catalysts, how it has traded so far (return,
+progress to target, day of 20) and any new material on either leg.
+
+For each idea return:
+- status: "On track" (evidence and price both moving our way), "Watch" (nothing decisive yet, or
+  price and evidence disagree), "Needs a tweak" (the thesis holds but an assumption should change,
+  e.g. the catalyst moved or the stop is too tight), or "Broken" (what would prove it wrong has
+  happened).
+- note: at most 25 words on what changed and why it matters, with citations. If nothing new
+  came out, judge from price action and say so plainly.
+- tweak: at most 20 words on what to change (target, stop, horizon, a leg), or "" if nothing.
+Return JSON: {"rows": [{"id": <idea id as given>, "status": "...", "note": "...", "tweak": "..."}]}.
+"""
+
+THESIS_SCHEMA = {
+    "type": "object",
+    "properties": {"rows": {"type": "array", "items": {"type": "object", "properties": {
+        "id": {"type": "integer"}, "status": {"type": "string", "enum": ["On track", "Watch", "Needs a tweak", "Broken"]},
+        "note": {"type": "string"}, "tweak": {"type": "string"}}, "required": ["id", "status", "note"]}}},
+    "required": ["rows"],
 }

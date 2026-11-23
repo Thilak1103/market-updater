@@ -71,8 +71,9 @@ trade_ideas:
   stop_spread_vol_multiple: 1.5
   target_spread_vol_multiple: 2.0    # target when the spread is not already well below its 60-day mean
   max_holding_trading_days: 20       # the horizon of every idea
-  min_review_score: 6                # a second Opus pass scores each idea 1-10; below this it is dropped
-                                     # (or kept as Low conviction if needed to reach the daily minimum)
+  min_review_score: 7                # a second Opus pass scores each idea 1-10; below this it is never pitched
+  review_rounds: 3                   # if fewer than 3 clear review, ask for new candidates up to this many times
+  no_repeat_days: 21                 # a stock pitched in the last 21 days (or in an open idea) is not pitched again
   label: "Idea for research, not advice"
   comps:
     peers_per_idea: [3, 4]          # plus both legs; same subsector, from watch lists
@@ -500,6 +501,27 @@ podcasts:
   - {name: "Macro Musings", url: null, transcript: on_demand}
   - {name: "Monetary Matters", url: null, transcript: on_demand}
   - {name: "Capital Allocators", url: "https://tedseides.libsyn.com/rss", transcript: on_demand, sector: financials}
+  # Added 23 Nov 2026 (feeds looked up by name at run time):
+  - {name: "Semi Doped", url: null, transcript: always, sector: tmt}
+  - {name: "Prof G Markets", url: null, transcript: always}
+  - {name: "The Prof G Pod with Scott Galloway", url: null, transcript: always, sector: tmt}
+  - {name: "Masters in Business", url: null, transcript: always, sector: financials}
+  - {name: "Animal Spirits Podcast", url: null, transcript: always}
+  - {name: "The Compound and Friends", url: null, transcript: always}
+  - {name: "Acquired", url: null, transcript: always, sector: tmt}
+  - {name: "Big Technology Podcast", url: null, transcript: always, sector: tmt}
+  - {name: "Hard Fork", url: null, transcript: always, sector: tmt}
+  - {name: "All-In with Chamath, Jason, Sacks & Friedberg", url: null, transcript: always, sector: tmt}
+  - {name: "Hidden Forces", url: null, transcript: always}
+  - {name: "MacroVoices", url: null, transcript: always}
+  - {name: "Forward Guidance", url: null, transcript: always}
+  - {name: "The Rest Is Money", url: null, transcript: always}
+  - {name: "The Business of Fashion Podcast", url: null, transcript: always, sector: staples_retail}
+  - {name: "Autoline After Hours", url: null, transcript: always, sector: autos}
+  - {name: "Barron's Streetwise", url: null, transcript: always}
+  - {name: "Value Investing with Legends", url: null, transcript: always, sector: financials}
+  - {name: "The Meb Faber Show", url: null, transcript: always}
+  - {name: "Excess Returns", url: null, transcript: always}
 
 # ── Email inbox (newsletters, incl. FT, Bloomberg, paid Substacks) ───
 # A dedicated mailbox; subscribe newsletters to it or forward them.
@@ -510,3 +532,10 @@ email_inbox:
   password_env: IMAP_APP_PASSWORD     # an app-specific password, never your main one
   folder: INBOX
   subscriber_senders: ["ft.com", "bloomberg", "substack.com"]
+
+# ── Listening ─────────────────────────────────────────────────────────
+ingest:
+  audio_minutes_per_run: 200      # Groq free tier; speech is sped up 1.4x first, so this covers ~280 real minutes
+  # Daily news recaps mostly repeat the price moves: transcribed last, only if budget is left.
+  recap_podcasts: ["Bloomberg Daybreak: Europe Edition", "FT News Briefing", "The Markets", "Bloomberg Tech",
+                   "Thoughts on the Market"]

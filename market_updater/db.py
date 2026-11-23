@@ -122,10 +122,12 @@ class DB:
 
     # Columns added after the first release; ALTER TABLE is a no-op if they already exist.
     MIGRATIONS = {
+        "items": [("summary", "TEXT")],
         "ideas": [("headline", "TEXT"), ("target_spread", "REAL"), ("target_return", "REAL"),
                   ("stop_return", "REAL"), ("horizon_end", "TEXT"), ("following", "INTEGER DEFAULT 0"),
                   ("best", "REAL"), ("worst", "REAL"), ("outcome", "TEXT DEFAULT 'Open'"),
-                  ("briefing_url", "TEXT"), ("spec", "TEXT")],
+                  ("briefing_url", "TEXT"), ("spec", "TEXT"), ("thesis_status", "TEXT"),
+                  ("thesis_note", "TEXT"), ("thesis_checked", "TEXT")],
     }
 
     def _migrate(self) -> None:
@@ -196,6 +198,7 @@ class DB:
     def claims_since(self, since: datetime) -> list[sqlite3.Row]:
         return self.q(
             "SELECT c.*, i.url, i.title AS item_title, i.source_name, i.source_type, i.kind AS item_kind, i.published, "
+            "i.summary AS item_summary, "
             "i.is_subscriber, i.repeat_of "
             "FROM claims c JOIN items i ON i.id=c.item_id WHERE c.created>=? OR i.published>=? ORDER BY c.id",
             (since.astimezone(timezone.utc).replace(tzinfo=None).isoformat(timespec="seconds"),

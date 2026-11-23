@@ -91,6 +91,7 @@ def daily(*, dry_run: bool = False, settings: Settings | None = None, db: DB | N
         names = F.company_names(db, settings.all_watchlist)
         stats["collect"] = _step("collect", problems, collect_all, settings, db, notion, now, names, default={})
     stats["extract"] = _step("extract", problems, X.extract_pending, settings, db, llm, default={})
+    stats["summaries"] = _step("episode summaries", problems, X.summarise_long_items, db, llm, default=0)
     new_views = _step("views", problems, V.record_views, settings, db, since, default=[]) or []
 
     # 3. Macro, earnings, snapshot
@@ -128,6 +129,8 @@ def daily(*, dry_run: bool = False, settings: Settings | None = None, db: DB | N
     idea_updates = _step("idea updates", problems, I.update_open, db, prices, settings, day, default=[]) or []
     ideas = _step("trade ideas", problems, I.generate, settings, db, llm, prices, states, claims, reports, snap,
                   day, default=[]) or []
+    checks = _step("thesis check", problems, I.thesis_check, llm, db, settings, claims, snap, idea_updates, day,
+                   default=[]) or []
 
     # 6. Writing
     story = _step("top line", problems, S.market_story, llm, settings, snap, claims)
@@ -158,7 +161,7 @@ def daily(*, dry_run: bool = False, settings: Settings | None = None, db: DB | N
         idea.markdown = idea.markdown.replace("{{chart}}", "")
     dash = (settings.get("notion.pages", {}) or {}).get("dashboard")
     md, cited = assemble(settings, day, snap, story, ideas, idea_updates, core, reviews, els, cons, deep,
-                         db, claims_by_id, pending, dash)
+                         db, claims_by_id, pending, dash, checks)
     failed_core = sum(1 for s in core if not s or not s.blurb)
     status = "Published" if failed_core == 0 and story else "Partial"
 
@@ -259,7 +262,7 @@ def _table(head: list[str], rows: list[list[str]]) -> str:
 
 def assemble(settings, day, snap, story, ideas, idea_updates, core, reviews, els, cons, deep,
              db, claims_by_id, pending: list[str] | None = None,
-             dashboard_id: str | None = None) -> tuple[str, set[int]]:
+             dashboard_id: str | None = None, checks: list[dict] | None = None) -> tuple[str, set[int]]:
     from .analysis.checks import link_citations, tidy
 
     parts: list[str] = []
@@ -288,11 +291,11 @@ def assemble(settings, day, snap, story, ideas, idea_updates, core, reviews, els
     # Trade ideas
     idea_md = "\n".join(i.markdown for i in ideas)
     if len(ideas) < 3:
-        idea_md += (f"\n*Only {len(ideas)} idea{'s' if len(ideas) != 1 else ''} passed today's checks "
-                    "(a well-correlated pair and a case for both legs).*")
-    follow = I.following_markdown(idea_updates, dashboard_id)
-    add("🎯 Trade ideas", "\n".join(x for x in (idea_md, follow) if x.strip()),
-        {c for i in ideas for c in i.cited})
+        idea_md += (f"\n*Only {len(ideas)} idea{'s' if len(ideas) != 1 else ''} passed today's review. Every pitch "
+                    "needs a well-correlated pair, evidence on both legs and a reviewer score of at least 7/10, "
+                    "and weaker ideas are not pitched.*")
+    add("🎯 Trade ideas", idea_md, {c for i in ideas for c in i.cited})
+    add("📋 Open ideas: is the thesis playing out?", I.book_markdown(checks or [], idea_updates, dashboard_id))
 
     # Core sectors
     blocks = []

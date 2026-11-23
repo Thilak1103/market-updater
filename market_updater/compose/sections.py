@@ -47,7 +47,7 @@ class MarketStory:
 class SectorOut:
     sector: Sector
     blurb: str
-    reading: list[tuple[dict, str]]          # (item, summary), best first
+    reading: list[tuple[dict, str, list[str]]]   # (item, summary, points), best first
     filtered: str
     cited: set[int] = field(default_factory=set)
     problems: list[str] = field(default_factory=list)
@@ -173,11 +173,21 @@ def market_story(llm, settings: Settings, snap: Snapshot, claims: list[dict]) ->
             bullets.append(f"- **{lead}:** {text}")
             cited |= ids
     so_what = {}
-    for name, note in (res.get("so_what") or {}).items():
+    raw = res.get("so_what") or []
+    pairs = raw.items() if isinstance(raw, dict) else [(r.get("name", ""), r.get("note", "")) for r in raw]
+    names = {r["name"].lower(): r["name"] for r in snap.key_rows}
+    for i, (name, note) in enumerate(pairs):
+        key = names.get((name or "").strip().lower())
+        if key is None and i < len(snap.key_rows) and not name:
+            key = snap.key_rows[i]["name"]
+        if key is None:
+            continue
         text, ids, pr = clean(note, by_id, snap, extra)
-        so_what[name] = text
+        so_what[key] = text
         cited |= ids
         problems += pr
+    if len(so_what) < len(snap.key_rows) // 2:
+        problems.append(f"only {len(so_what)} of {len(snap.key_rows)} 'so what' notes came back")
     headline = tidy(res.get("headline", "")).strip()
     return MarketStory(headline, res.get("mood", "mixed"), bullets, so_what, cited, problems)
 
@@ -203,12 +213,19 @@ def _items_block(chosen: list[dict], people: dict) -> tuple[str, dict[int, dict]
     for c in chosen:
         it = items.setdefault(c["item_id"], {
             "id": c["item_id"], "title": c.get("item_title") or "", "url": c.get("url") or "",
-            "source": c.get("source_name") or "", "type": c.get("source_type") or "rss", "claims": []})
+            "source": c.get("source_name") or "", "type": c.get("source_type") or "rss", "claims": [],
+            "summary": c.get("item_summary")})
         it["claims"].append(c)
     numbered = {i + 1: it for i, it in enumerate(items.values())}
     lines = []
     for n, it in numbered.items():
         lines.append(f"Item {n} ({TYPE_LABEL.get(it['type'], 'News')} · {it['source']}): {it['title']}")
+        if it.get("summary"):
+            try:
+                sm = json.loads(it["summary"])
+                lines.append(f"  Who: {sm.get('who', '')}. Main points: " + " | ".join(sm.get("points", [])))
+            except (TypeError, ValueError):
+                pass
         lines += ["  " + claim_line(c, people) for c in it["claims"]]
     return "\n".join(lines), numbered
 
@@ -236,8 +253,15 @@ def sector_section(llm, settings: Settings, sector: Sector, snap: Snapshot, clai
             continue
         summary, ids, pr = clean(r.get("summary", ""), by_id, snap, extra)
         problems += pr
+        sm_text = it.get("summary") or ""
+        points = []
+        for p in (r.get("points") or [])[:6]:
+            pt, pids, _ = clean(p, by_id, snap, extra + [sm_text])
+            if pt:
+                points.append(pt)
+                ids |= pids
         if summary:
-            reading.append((it, summary))
+            reading.append((it, summary, points))
             cited |= ids
     filtered = tidy(res.get("filtered", "") or "")
     return SectorOut(sector, blurb, reading, filtered, cited, problems)
@@ -255,19 +279,29 @@ def reading_markdown(out: SectorOut, snap: Snapshot, names: dict[str, str]) -> s
             parts.append(f"| {names.get(r['ticker'], r['ticker'])} | {pct(r['chg'])} | {pct(r['r1m'], False)} | "
                          f"{pct(r['ytd'], False)} |")
     for heading, types in READING_GROUPS:
-        group = [(it, s) for it, s in out.reading
+        group = [(it, s, pts) for it, s, pts in out.reading
                  if (types is None and not any(it["type"] in t for _, t in READING_GROUPS if t))
                  or (types and it["type"] in types)]
         if not group:
             continue
         parts.append(f"## {heading}")
-        for it, summary in group:
+        for it, summary, points in group:
             label = f"{it['source']} ({TYPE_LABEL.get(it['type'], 'News')})"
             if types is None:
                 parts.append(f"- [**{it['title']}**]({it['url']}) ({it['source']}): {summary}")
             else:
                 ic = "🎧" if it["type"] in ("podcast", "youtube") else "📄"
-                parts += [f"::: callout {ic} gray", f"[**{it['title']}**]({it['url']}) · {label}", summary, ":::"]
+                who = ""
+                try:
+                    who = (json.loads(it.get("summary") or "{}") or {}).get("who", "")
+                except ValueError:
+                    pass
+                parts += [f"::: callout {ic} gray", f"[**{it['title']}**]({it['url']}) · {label}"]
+                if who:
+                    parts.append(f"*{who.rstrip('.')}.*")
+                parts.append(summary)
+                parts += [f"- {p}" for p in points]
+                parts.append(":::")
     if not out.reading:
         parts.append("Nothing worth a recommendation today.")
     if out.filtered:

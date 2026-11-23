@@ -47,3 +47,18 @@ def test_targets_tracking_and_scorecard(db, fake_prices, settings):
     assert "| Hit target | 1 | 1 |" in card
     box = I.following_markdown([dict(u, status="Open", progress=0.5)], "abc")
     assert "callout ⭐ yellow" in box and "50% of the way to target" in box and "notion:abc" in box
+
+
+def test_no_repeats_and_book_table(db):
+    from datetime import date
+    from market_updater.compose import ideas as I
+    db.ex("INSERT INTO ideas(created,long,short,hedge_ratio,corr,entry_long,entry_short,entry_spread,spread_std,"
+          "stop_spread,status) VALUES ('2026-11-20','NVDA','AMD',1,0.8,1,1,0,0.1,-1,'Closed')")
+    db.ex("INSERT INTO ideas(created,long,short,hedge_ratio,corr,entry_long,entry_short,entry_spread,spread_std,"
+          "stop_spread,status) VALUES ('2026-10-01','JPM','BAC',1,0.8,1,1,0,0.1,-1,'Open')")
+    blocked = I.recently_pitched(db, date(2026, 11, 23), 21)
+    assert {"NVDA", "AMD", "JPM", "BAC"} <= blocked
+    upd = [{"id": 2, "long": "JPM", "short": "BAC", "pnl": 0.012, "status": "Open", "outcome": "Open", "day": 4,
+            "max_days": 20, "progress": 0.3, "following": True, "reason": None}]
+    md = I.book_markdown([dict(upd[0], thesis_status="Needs a tweak", thesis_note="Catalyst moved to January.")], upd, "abc")
+    assert "| ⭐ Long JPM / short BAC | 4 of 20 |" in md and "Needs a tweak" in md and "Catalyst moved" in md

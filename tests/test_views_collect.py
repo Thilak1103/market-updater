@@ -73,3 +73,31 @@ def test_published_today(db):
     rid = db.start_run("daily")
     db.finish_run(rid, "Published")
     assert R.published_today(db)
+
+
+def test_listening_order_and_transcripts():
+    from datetime import datetime, timezone
+    from market_updater.ingest.collect import listening_order
+    from market_updater.ingest import Item
+    t = datetime(2026, 11, 23, tzinfo=timezone.utc)
+    recap = Item(url="a", title="Daybreak: stocks fall", text="", source_name="Bloomberg Daybreak: Europe Edition",
+                 source_type="podcast", kind="podcast", published=t, audio_url="x")
+    damo = Item(url="b", title="Aswath Damodaran on Nvidia", text="", source_name="Prof G Markets",
+                source_type="podcast", kind="podcast", published=t, audio_url="y")
+    other = Item(url="c", title="Random chat", text="", source_name="Hard Fork", source_type="podcast",
+                 kind="podcast", published=t, audio_url="z")
+    order = listening_order([recap, other, damo], {"Bloomberg Daybreak: Europe Edition"}, ["Aswath Damodaran", "Nvidia"])
+    assert [i.url for i in order] == ["b", "c", "a"]
+
+
+def test_publisher_transcript_vtt(monkeypatch):
+    import market_updater.ingest.rss as R
+
+    class Resp:
+        status_code = 200
+        text = "WEBVTT\n\n1\n00:00:01.000 --> 00:00:03.000\nHello there.\n\n2\n00:00:03.000 --> 00:00:05.000\nNvidia guidance."
+        def raise_for_status(self):
+            pass
+    monkeypatch.setattr(R, "get_with_retry", lambda url: Resp())
+    assert R.fetch_transcript("https://x/t.vtt") == "Hello there. Nvidia guidance."
+    assert R._transcript_url({"podcast_transcript": {"url": "https://x/t.vtt", "type": "text/vtt"}}) == "https://x/t.vtt"

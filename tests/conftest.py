@@ -105,7 +105,7 @@ def fake_responder(purpose: str, system: str, user: str):
                 "bullets": [{"lead": "Why AI sold off", "text": "Capex worries are building [c1]."},
                             {"lead": "Made up", "text": "Made-up number 97.3% with no source."},
                             {"lead": "Meta", "text": "The claims supplied do not explain the move."}],
-                "so_what": {r: "worth watching" for r in rows}}
+                "so_what": [{"name": r, "note": "worth watching"} for r in rows]}
     if purpose.startswith("write_") and purpose in ("write_tmt", "write_autos", "write_staples_retail",
                                                     "write_financials"):
         return {"blurb": "Voices are turning bearish on AI spending [c1]. A sentence citing a missing claim [c99999]. "

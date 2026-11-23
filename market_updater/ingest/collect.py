@@ -48,18 +48,37 @@ def store(db: DB, items: list[Item]) -> int:
             url=it.url, fingerprint=fp, source_name=it.source_name, source_type=it.source_type,
             kind=it.kind, title=it.title[:500],
             published=(it.published or datetime.now(timezone.utc)).isoformat(timespec="seconds"),
-            text=it.text[:MAX_TEXT], is_subscriber=it.is_subscriber, sectors=it.sectors,
+            text=it.text[:MAX_TEXT * (3 if it.kind == 'podcast' else 1)], is_subscriber=it.is_subscriber, sectors=it.sectors,
             repeat_of=_repeat_of(db, it.title) if it.kind in ("headline", "article") else None,
         )
         n += 1 if rid else 0
     return n
 
 
-def _transcribe(db: DB, items: list[Item], every_run: set[str], budget_min: float) -> float:
+def listening_order(items: list[Item], recap: set[str], interests: list[str]) -> list[Item]:
+    """Which episodes to transcribe first: interviews and episodes that name a company, person or
+    theme we follow come first; daily news recaps (which mostly repeat the price moves) come last."""
+    words = [w.lower() for w in interests if len(w) > 3]
+
+    def score(it: Item) -> tuple:
+        blob = f"{it.title} {it.text[:3000]}".lower()
+        hits = sum(1 for w in words if w in blob)
+        is_recap = it.source_name in recap
+        return (is_recap, -min(hits, 5), -(it.published.timestamp() if it.published else 0))
+    return sorted(items, key=score)
+
+
+def _transcribe(db: DB, items: list[Item], every_run: set[str], budget_min: float,
+                recap: set[str] | None = None, interests: list[str] | None = None) -> float:
+    # The budget is per day: the run collects twice (05:05 and again at 06:10), so count what
+    # was already transcribed today.
+    today = datetime.utcnow().date().isoformat()
+    row = db.one("SELECT COALESCE(SUM(input_tokens),0) s FROM llm_usage WHERE provider='groq' AND "
+                 "purpose='transcription' AND ts>=?", (today,))
+    done_today = float(row["s"] if row else 0) / 60
+    budget_min = max(0.0, budget_min - done_today)
     used = 0.0
-    for it in items:
-        if not it.audio_url or (it.source_name not in every_run and it.source_type != "inbox"):
-            continue
+    for it in listening_order([i for i in items if i.audio_url], recap or set(), interests or []):
         if db.one("SELECT 1 FROM transcribed WHERE audio_url=?", (it.audio_url,)):
             continue
         if used >= budget_min:
@@ -154,8 +173,11 @@ def collect_all(settings: Settings, db: DB, notion=None, now: datetime | None = 
             log.warning("People mentions failed: %s", e)
 
     every_run = {s.name for s in settings.sources if s.transcript == "every_run"}
-    budget = float(settings.get("ingest.audio_minutes_per_run", 150))
-    stats["audio_minutes"] = _transcribe(db, collected, every_run, budget)
+    budget = float(settings.get("ingest.audio_minutes_per_run", 200))
+    recap = set(settings.get("ingest.recap_podcasts", []) or [])
+    interests = [p.name for p in settings.people.values()] + list((company_names or {}).values()) + \
+        [s.name for s in settings.sectors]
+    stats["audio_minutes"] = _transcribe(db, collected, every_run, budget, recap, interests)
     stats["items"] = store(db, collected)
     log.info("Collected %d new items from %d sources (%d failed)",
              stats["items"], stats["sources_ok"], stats["sources_failed"])

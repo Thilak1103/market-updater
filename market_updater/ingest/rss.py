@@ -37,6 +37,44 @@ def _audio(e) -> str | None:
     return None
 
 
+def _transcript_url(e) -> str | None:
+    """A publisher transcript (podcast:transcript), if the feed has one."""
+    cands = []
+    for k, v in e.items():
+        if "transcript" in k.lower():
+            cands += v if isinstance(v, list) else [v]
+    for c in cands:
+        url = c.get("url") or c.get("href") if isinstance(c, dict) else (c if isinstance(c, str) else None)
+        if url and url.startswith("http"):
+            return url
+    for l in e.get("links", []) or []:
+        if "transcript" in (l.get("rel") or "") or (l.get("type") or "") in ("text/vtt", "application/x-subrip",
+                                                                            "application/srt"):
+            return l.get("href")
+    return None
+
+
+def fetch_transcript(url: str) -> str:
+    """Download a publisher transcript (VTT, SRT, JSON or HTML) and return plain text."""
+    r = get_with_retry(url)
+    r.raise_for_status()
+    body = r.text
+    if body.lstrip().startswith("{"):
+        import json
+        try:
+            data = json.loads(body)
+            segs = data.get("segments") or []
+            return " ".join((s.get("speaker", "") + ": " if s.get("speaker") else "") + s.get("body", "")
+                            for s in segs).strip()
+        except ValueError:
+            pass
+    if "-->" in body:                                    # VTT or SRT: drop cue numbers and timings
+        lines = [l for l in body.splitlines()
+                 if l.strip() and "-->" not in l and not l.strip().isdigit() and l.strip() != "WEBVTT"]
+        return " ".join(lines)
+    return html_to_text(body)
+
+
 def fetch_feed(source: Source, since: datetime, max_items: int = 8,
                fetch_full: bool = True) -> list[Item]:
     r = get_with_retry(source.feed_url)
@@ -55,6 +93,16 @@ def fetch_feed(source: Source, since: datetime, max_items: int = 8,
         html = _entry_html(e)
         text = html_to_text(html)
         audio = _audio(e) if source.type == "podcast" else None
+        if audio:
+            turl = _transcript_url(e)
+            if turl:
+                try:
+                    published_text = fetch_transcript(turl)
+                    if len(published_text) > 2000:
+                        text = f"{text}\n\nTranscript:\n{published_text}"
+                        audio = None            # no need to transcribe it ourselves
+                except Exception as ex:
+                    log.debug("Publisher transcript failed for %s: %s", link, ex)
         if fetch_full and not audio and len(text) < MIN_FULL_TEXT and source.type != "bluesky":
             try:
                 page = get_with_retry(link)
