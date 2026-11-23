@@ -89,6 +89,8 @@ def clean_env() -> list[str]:
         if v is None:
             continue
         clean = v.strip()
+        if k == "IMAP_APP_PASSWORD":        # Google shows app passwords as four groups of four
+            clean = clean.replace(" ", "")
         if clean != v:
             fixed.append(k)
         if clean:
