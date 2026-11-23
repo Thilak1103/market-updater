@@ -4,12 +4,12 @@
 name: daily briefing
 on:
   schedule:
-    # GitHub cron is UTC. Two entries cover GMT and BST; the guard step keeps the right one.
-    - cron: "5 4 * * 1-5"    # 04:05 UTC = 05:05 BST
-    - cron: "5 5 * * 1-5"    # 05:05 UTC = 05:05 GMT
-  # Also started at exactly 05:05 London by an outside timer (cron-job.org), because GitHub's own
-  # scheduler can start runs hours late or skip them at busy times. Whichever comes first runs;
-  # any later start that day sees the briefing is already out and stops.
+    # GitHub cron is UTC and only "best effort": at busy times GitHub starts runs hours late or
+    # drops them. So there are several start slots between about 05:15 and 08:45 London time
+    # (GMT or BST); the first one GitHub actually starts does the briefing, and every later
+    # start sees today's briefing is already out and stops within a minute.
+    - cron: "17,47 4-7 * * 1-5"
+  # Optional: an outside timer (e.g. cron-job.org) can also start it at exactly 05:05 London.
   workflow_dispatch:
     inputs:
       wait:
@@ -38,14 +38,12 @@ jobs:
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
       MU_DATA_DIR: ${{ github.workspace }}/data
     steps:
-      - name: Pick the cron entry that matches London time (GMT or BST)
+      - name: Only run between 05:00 and 15:00 London time
         id: guard
         run: |
-          off=$(TZ=Europe/London date +%z)
-          echo "London offset $off, schedule '${{ github.event.schedule }}'"
-          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] \
-             || { [ "$off" = "+0100" ] && [ "${{ github.event.schedule }}" = "5 4 * * 1-5" ]; } \
-             || { [ "$off" = "+0000" ] && [ "${{ github.event.schedule }}" = "5 5 * * 1-5" ]; }; then
+          hour=$(TZ=Europe/London date +%-H)
+          echo "London time $(TZ=Europe/London date +%H:%M), event $GITHUB_EVENT_NAME"
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] || { [ "$hour" -ge 5 ] && [ "$hour" -lt 15 ]; }; then
             echo "go=1" >> "$GITHUB_OUTPUT"
           fi
       - uses: actions/checkout@v4
