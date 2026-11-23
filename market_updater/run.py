@@ -27,7 +27,7 @@ from .market.prices import Prices
 from .publish import notion as N
 from .publish import telegram
 from .settings import DATA_DIR, SECTOR_LABELS, Settings, load
-from .util import is_friday, log, now_london, word_set
+from .util import LONDON, is_friday, log, now_london, word_set
 
 
 @dataclass
@@ -196,6 +196,16 @@ def daily(*, dry_run: bool = False, settings: Settings | None = None, db: DB | N
         telegram.send(f"Market Updater {day}: {status}. {len(problems)} problem(s). First: "
                       f"{problems[0] if problems else 'n/a'}")
     return RunResult(day, md, status, url, problems, stats)
+
+
+def published_today(db: DB | None = None) -> bool:
+    """True if a daily run already finished as Published or Partial today (London date)."""
+    db = db or DB()
+    today = now_london().date()
+    start = datetime(today.year, today.month, today.day, tzinfo=LONDON).astimezone(timezone.utc)
+    row = db.one("SELECT COUNT(*) n FROM runs WHERE kind='daily' AND status IN ('Published','Partial') "
+                 "AND started>=?", (start.strftime("%Y-%m-%dT%H:%M:%S"),))
+    return bool(row and row["n"])
 
 
 def _deep_dive(settings: Settings, db: DB, llm, snap, day: date, now: datetime):

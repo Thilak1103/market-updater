@@ -61,3 +61,15 @@ def test_earnings_review_waits_for_reaction_session(db):
     old = Report("AAA", "2026-11-17", hour="bmo")             # already reviewed last time
     add_reaction(old, df, None, db)
     assert not reviewable(old, df)
+
+
+def test_published_today(db):
+    from datetime import datetime, timezone
+    from market_updater import run as R
+    assert not R.published_today(db)
+    rid = db.start_run("daily")
+    db.finish_run(rid, "Failed")
+    assert not R.published_today(db)
+    rid = db.start_run("daily")
+    db.finish_run(rid, "Published")
+    assert R.published_today(db)
