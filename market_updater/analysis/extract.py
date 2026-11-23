@@ -91,7 +91,7 @@ def _batches(items: list, max_chars: int = 45_000, max_items: int = 6):
         yield batch
 
 
-def extract_pending(settings: Settings, db: DB, llm, max_claims: int = 6) -> dict:
+def extract_pending(settings: Settings, db: DB, llm, max_claims: int = 10) -> dict:
     items = [dict(r) for r in db.pending_items()]
     stats = {"items": len(items), "claims": 0, "dropped_quotes": 0, "failed_batches": 0}
     system = _system(settings, max_claims)

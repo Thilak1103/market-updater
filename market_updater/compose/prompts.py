@@ -118,6 +118,13 @@ Only pitch ideas you would defend at an investment committee. Each needs ALL of:
   changed the company's fundamentals, and prefer a peer short over an ETF that holds the long.
 Look across every sector, not just today's headline story; there is always an opportunity.
 
+You also get what the briefing has learned over time: each voice's track record (how often its
+calls beat the sector over 20 trading days), what the reader's newsletters have been pitching
+over the last month, and which ideas the reader followed or built out and how past ideas did by
+origin. Give more weight to voices with a good record and less to those without one; notice
+names several credible voices are circling; and lean towards the kinds of idea that have worked
+and that the reader acts on. Say in the case when a leg rests on a voice with a strong record.
+
 Prefer, in order: a crowded consensus with credible dissent; a narrative that is cracking; an
 earnings reaction out of line with what the call said; a priority voice changing view; a pitch
 from a newsletter or a short-seller report; a large sector move.

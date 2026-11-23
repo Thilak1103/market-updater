@@ -127,7 +127,7 @@ class DB:
                   ("stop_return", "REAL"), ("horizon_end", "TEXT"), ("following", "INTEGER DEFAULT 0"),
                   ("best", "REAL"), ("worst", "REAL"), ("outcome", "TEXT DEFAULT 'Open'"),
                   ("briefing_url", "TEXT"), ("spec", "TEXT"), ("thesis_status", "TEXT"),
-                  ("thesis_note", "TEXT"), ("thesis_checked", "TEXT")],
+                  ("thesis_note", "TEXT"), ("thesis_checked", "TEXT"), ("build_out", "INTEGER DEFAULT 0")],
     }
 
     def _migrate(self) -> None:
