@@ -101,3 +101,11 @@ def test_publisher_transcript_vtt(monkeypatch):
     monkeypatch.setattr(R, "get_with_retry", lambda url: Resp())
     assert R.fetch_transcript("https://x/t.vtt") == "Hello there. Nvidia guidance."
     assert R._transcript_url({"podcast_transcript": {"url": "https://x/t.vtt", "type": "text/vtt"}}) == "https://x/t.vtt"
+
+
+def test_newsletter_links():
+    from market_updater.ingest.email_inbox import _web_link
+    html = ('<a href="https://substack.com/redirect/abc">x</a><a href="https://www.viksnewsletter.com/p/hbm-wall?utm_source=post">'
+            'Read</a>')
+    assert _web_link(html) == "https://www.viksnewsletter.com/p/hbm-wall"
+    assert _web_link('<a href="https://ft.com/x">View in browser</a>') == "https://ft.com/x"

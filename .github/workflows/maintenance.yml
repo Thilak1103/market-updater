@@ -1,4 +1,5 @@
 # One-off jobs you start by hand: Actions → "maintenance" → Run workflow → pick a job.
+#   check-inbox     log in to the newsletter inbox and list what arrived in the last 72 hours
 #   sync-sources    copy feed URLs and YAML-only sources from config/briefing.yaml into the
 #                   Notion Sources table (new ones arrive paused, so nothing changes until you tick them)
 #   check-sources   try every feed once and print which ones work
@@ -10,9 +11,9 @@ on:
       job:
         description: "Which job to run"
         required: true
-        default: sync-sources
+        default: check-inbox
         type: choice
-        options: [sync-sources, check-sources, export-settings]
+        options: [check-inbox, sync-sources, check-sources, export-settings]
 concurrency: {group: briefing, cancel-in-progress: false}
 jobs:
   maintenance:
@@ -20,6 +21,9 @@ jobs:
     timeout-minutes: 30
     env:
       NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+      IMAP_HOST: ${{ secrets.IMAP_HOST }}
+      IMAP_USER: ${{ secrets.IMAP_USER }}
+      IMAP_APP_PASSWORD: ${{ secrets.IMAP_APP_PASSWORD }}
       MU_DATA_DIR: ${{ github.workspace }}/data
     steps:
       - uses: actions/checkout@v4

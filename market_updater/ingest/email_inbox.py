@@ -45,22 +45,27 @@ def _body(msg) -> tuple[str, str]:
 
 def _web_link(html: str) -> str | None:
     m = re.search(r'href="(https?://[^"]+)"[^>]*>\s*(?:View|Read)[^<]{0,30}(?:browser|online|web)', html, re.I)
+    if m:
+        return m.group(1)
+    # Substack and similar: the first link to a post ("/p/<slug>"), without tracking parameters
+    m = re.search(r'href="(https?://[^"/]+/p/[^"?#]+)', html)
     return m.group(1) if m else None
 
 
-def fetch_inbox(settings: Settings, lookback_hours: int = 36) -> list[Item]:
+def fetch_inbox(settings: Settings, lookback_hours: int = 36, since_dt: datetime | None = None) -> list[Item]:
     host, user, pw = (os.environ.get(k) for k in ("IMAP_HOST", "IMAP_USER", "IMAP_APP_PASSWORD"))
     if not (host and user and pw):
         return []
     cfg = settings.get("email_inbox", {}) or {}
     subscriber_senders = [s.lower() for s in cfg.get("subscriber_senders", [])]
-    since = (datetime.now(timezone.utc) - timedelta(hours=lookback_hours)).strftime("%d-%b-%Y")
+    start = since_dt or (datetime.now(timezone.utc) - timedelta(hours=lookback_hours))
+    since = start.strftime("%d-%b-%Y")
     out: list[Item] = []
     with imaplib.IMAP4_SSL(host) as M:
         M.login(user, pw)
         M.select(cfg.get("folder", "INBOX"))
         typ, data = M.search(None, f'(SINCE "{since}")')
-        for num in (data[0].split() if data and data[0] else [])[-80:]:
+        for num in (data[0].split() if data and data[0] else [])[-150:]:
             typ, raw = M.fetch(num, "(RFC822)")
             if not raw or not raw[0]:
                 continue
@@ -82,3 +87,21 @@ def fetch_inbox(settings: Settings, lookback_hours: int = 36) -> list[Item]:
                             is_subscriber=any(s in sender for s in subscriber_senders)))
     log.info("Email inbox: %d messages", len(out))
     return out
+
+
+def check_inbox(settings: Settings, hours: int = 72) -> str:
+    """Log in and list what arrived recently, without using any model. For checking the setup."""
+    host, user, pw = (os.environ.get(k) for k in ("IMAP_HOST", "IMAP_USER", "IMAP_APP_PASSWORD"))
+    missing = [k for k, v in (("IMAP_HOST", host), ("IMAP_USER", user), ("IMAP_APP_PASSWORD", pw)) if not v]
+    if missing:
+        return f"Inbox not configured for this run: missing {', '.join(missing)}."
+    items = fetch_inbox(settings, lookback_hours=hours)
+    senders: dict[str, int] = {}
+    for it in items:
+        senders[it.source_name] = senders.get(it.source_name, 0) + 1
+    lines = [f"Connected to {host} as {user[:3]}***. {len(items)} newsletters with readable text in the last {hours}h."]
+    lines += [f"- {n}: {c}" for n, c in sorted(senders.items(), key=lambda x: -x[1])]
+    no_link = sum(1 for it in items if it.url.startswith("email:"))
+    if no_link:
+        lines.append(f"{no_link} had no web link, so they will be cited without one.")
+    return "\n".join(lines)
