@@ -137,10 +137,12 @@ def daily(*, dry_run: bool = False, settings: Settings | None = None, db: DB | N
 
     # 6. Writing
     story = _step("top line", problems, S.market_story, llm, settings, snap, claims)
+    library = [X.claim_dict(c) for c in db.claims_since(now - timedelta(days=21))]
+    skip = db.recommended_since(21, day)
     core = [_step(f"sector {s.key}", problems, S.sector_section, llm, settings, s, snap, claims,
-                  _words(settings, "core_sector", 70)) for s in settings.core_sectors]
+                  _words(settings, "core_sector", 70), library, skip) for s in settings.core_sectors]
     els = _step("elsewhere", problems, S.elsewhere_section, llm, settings, snap, claims)
-    cons = _step("consensus check", problems, S.consensus_section, llm, settings, states, claims_by_id, snap)
+    cons = _step("consensus check", problems, S.consensus_section, llm, settings, states, claims_by_id, snap, db)
     deep = None
     if day.weekday() in (1, 2, 3, 4):       # Tuesday to Friday: yesterday's busiest Elsewhere sector
         deep = _step("deep dive", problems, _deep_dive, settings, db, llm, snap, day, now)
@@ -194,6 +196,9 @@ def daily(*, dry_run: bool = False, settings: Settings | None = None, db: DB | N
             for out in core:
                 if out and out.reading_url:
                     _step("reading link", problems, PG.link_reading, notion, out.reading_url, url)
+        for out in core:
+            if out and out.reading:
+                db.mark_recommended(day, out.sector.key, [it["id"] for it, _, _ in out.reading])
         if url is None:
             status = "Failed"
     _record_stories(db, day, claims, cited)
@@ -293,10 +298,11 @@ def assemble(settings, day, snap, story, ideas, idea_updates, core, reviews, els
 
     # Trade ideas
     idea_md = "\n".join(i.markdown for i in ideas)
-    if len(ideas) < 3:
-        idea_md += (f"\n*Only {len(ideas)} idea{'s' if len(ideas) != 1 else ''} passed today's review. Every pitch "
-                    "needs a well-correlated pair, evidence on both legs and a reviewer score of at least 7/10, "
-                    "and weaker ideas are not pitched.*")
+    if any(i.best_of_day for i in ideas):
+        idea_md = ("*Nothing cleared the 7/10 review bar today, so this is the strongest candidate, with the "
+                   "reviewer's main objection spelled out.*\n" + idea_md)
+    elif not ideas:
+        idea_md = "*No candidate survived the statistical checks today (correlation and evidence on both legs).*"
     add("🎯 Trade ideas", idea_md, {c for i in ideas for c in i.cited})
     add("📋 Open ideas: is the thesis playing out?", I.book_markdown(checks or [], idea_updates, dashboard_id))
 
@@ -327,8 +333,8 @@ def assemble(settings, day, snap, story, ideas, idea_updates, core, reviews, els
     # Consensus check
     if cons and cons.rows:
         add("🧭 Consensus check", CONSENSUS_PURPOSE + "\n" + _table(
-            ["Debate", "Crowd", "Change", "Worth noting"],
-            [[r["debate"], r["crowd"], r["change"], r["note"]] for r in cons.rows]), cons.cited)
+            ["Debate", "Crowd", "Change", "Worth noting", "Read both sides"],
+            [[r["debate"], r["crowd"], r["change"], r["note"], r.get("read", "–")] for r in cons.rows]), cons.cited)
 
     # Deep dive
     if deep and deep.markdown:

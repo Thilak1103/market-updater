@@ -186,6 +186,8 @@ def market_story(llm, settings: Settings, snap: Snapshot, claims: list[dict]) ->
         so_what[key] = text
         cited |= ids
         problems += pr
+    if not bullets:
+        problems.append(f"no top-line bullets came back (raw keys: {sorted(res)})")
     if len(so_what) < len(snap.key_rows) // 2:
         problems.append(f"only {len(so_what)} of {len(snap.key_rows)} 'so what' notes came back")
     headline = tidy(res.get("headline", "")).strip()
@@ -208,18 +210,23 @@ def headline_moves(snap: Snapshot) -> str:
 
 # -- core sectors ---------------------------------------------------------------
 
-def _items_block(chosen: list[dict], people: dict) -> tuple[str, dict[int, dict]]:
+LONG_FORM = {"newsletter", "substack", "podcast", "youtube", "research", "blog", "email"}
+
+
+def _items_block(chosen: list[dict], people: dict, earlier: set[int] | None = None) -> tuple[str, dict[int, dict]]:
     items: dict[int, dict] = {}
     for c in chosen:
         it = items.setdefault(c["item_id"], {
             "id": c["item_id"], "title": c.get("item_title") or "", "url": c.get("url") or "",
             "source": c.get("source_name") or "", "type": c.get("source_type") or "rss", "claims": [],
-            "summary": c.get("item_summary")})
+            "summary": c.get("item_summary"), "published": (c.get("published") or "")[:10],
+            "earlier": bool(earlier and c["item_id"] in earlier)})
         it["claims"].append(c)
     numbered = {i + 1: it for i, it in enumerate(items.values())}
     lines = []
     for n, it in numbered.items():
-        lines.append(f"Item {n} ({TYPE_LABEL.get(it['type'], 'News')} · {it['source']}): {it['title']}")
+        tag = f" [EARLIER, published {it['published'] or 'in the last three weeks'}]" if it["earlier"] else ""
+        lines.append(f"Item {n}{tag} ({TYPE_LABEL.get(it['type'], 'News')} · {it['source']}): {it['title']}")
         if it.get("summary"):
             try:
                 sm = json.loads(it["summary"])
@@ -230,18 +237,33 @@ def _items_block(chosen: list[dict], people: dict) -> tuple[str, dict[int, dict]
     return "\n".join(lines), numbered
 
 
+def earlier_pieces(library: list[dict], recent: list[dict], people: dict, *, sectors: set[str],
+                   tickers: set[str], skip_items: set[int], limit: int = 60) -> list[dict]:
+    """Long-form pieces from the last three weeks not yet recommended: the backlist for quiet days."""
+    seen = {c["item_id"] for c in recent} | set(skip_items)
+    pool = [c for c in select(library, people, sectors=sectors, tickers=tickers, limit=1000)
+            if c["item_id"] not in seen]
+    pool.sort(key=lambda c: (0 if c.get("item_summary") else 1,
+                             0 if (c.get("source_type") or "") in LONG_FORM else 1, -(c["id"])))
+    return pool[:limit]
+
+
 def sector_section(llm, settings: Settings, sector: Sector, snap: Snapshot, claims: list[dict],
-                   words: int) -> SectorOut:
+                   words: int, library: list[dict] | None = None,
+                   skip_items: set[int] | None = None) -> SectorOut:
     people = settings.people
-    chosen = select(claims, people, sectors={sector.key}, tickers=set(sector.watchlist), limit=80)
-    block, numbered = _items_block(chosen, people)
+    secs, ticks = {sector.key}, set(sector.watchlist)
+    chosen = select(claims, people, sectors=secs, tickers=ticks, limit=80)
+    older = earlier_pieces(library or [], claims, people, sectors=secs, tickers=ticks,
+                           skip_items=skip_items or set())
+    block, numbered = _items_block(chosen + older, people, {c["item_id"] for c in older})
     user = (f"Moves today:\n{snap.sector_tables.get(sector.key, '')}\n\n"
             f"Live debates for this sector: {', '.join(sector.debates) or 'none'}\n\nItems:\n{block}")
     system = P.SECTOR.format(sector=sector.name, subsectors="; ".join(sector.subsectors) or "all",
                              words=words, max_items=10)
     res = _json(llm, system=system, user=user, schema=P.SECTOR_SCHEMA, purpose=f"write_{sector.key}",
-                max_tokens=3000)
-    by_id = {c["id"]: c for c in chosen}
+                max_tokens=4000)
+    by_id = {c["id"]: c for c in chosen + older}
     extra = [snap.sector_tables.get(sector.key, "")]
     if not res:
         return SectorOut(sector, "", [], "", set(), ["not written"])
@@ -263,6 +285,8 @@ def sector_section(llm, settings: Settings, sector: Sector, snap: Snapshot, clai
         if summary:
             reading.append((it, summary, points))
             cited |= ids
+    if not reading and numbered:
+        problems.append("reading list came back empty")
     filtered = tidy(res.get("filtered", "") or "")
     return SectorOut(sector, blurb, reading, filtered, cited, problems)
 
@@ -287,8 +311,11 @@ def reading_markdown(out: SectorOut, snap: Snapshot, names: dict[str, str]) -> s
         parts.append(f"## {heading}")
         for it, summary, points in group:
             label = f"{it['source']} ({TYPE_LABEL.get(it['type'], 'News')})"
+            if it.get("earlier"):
+                label += f" · from {it.get('published') or 'earlier'}, still worth it"
             if types is None:
-                parts.append(f"- [**{it['title']}**]({it['url']}) ({it['source']}): {summary}")
+                when = f", {it['published']}" if it.get("earlier") and it.get("published") else ""
+                parts.append(f"- [**{it['title']}**]({it['url']}) ({it['source']}{when}): {summary}")
             else:
                 ic = "🎧" if it["type"] in ("podcast", "youtube") else "📄"
                 who = ""
@@ -303,7 +330,7 @@ def reading_markdown(out: SectorOut, snap: Snapshot, names: dict[str, str]) -> s
                 parts += [f"- {p}" for p in points]
                 parts.append(":::")
     if not out.reading:
-        parts.append("Nothing worth a recommendation today.")
+        parts.append("No new or recent pieces on this sector in the reading list yet.")
     if out.filtered:
         parts += ["::: callout 🧹 gray", f"*Filtered out: {out.filtered.rstrip('.')}.*", ":::"]
     return "\n".join(parts)
@@ -346,24 +373,46 @@ def elsewhere_section(llm, settings: Settings, snap: Snapshot, claims: list[dict
     return TableOut("Elsewhere", rows, cited, problems)
 
 
+def _debate_reading(s: DebateState, ids: dict[int, dict]) -> str:
+    """One piece from each side of a debate, long-form first: what to read to test the crowd."""
+    picks = []
+    sides = [s.majority] + [x for x in ("bull", "bear") if x != s.majority]
+    for side in sides:
+        voices = [v for v in s.dissenters + s.changed + s.latest
+                  if v.get("stance") == side and ids.get(v.get("claim_id"))]
+        voices.sort(key=lambda v: (0 if (ids[v["claim_id"]].get("source_type") or "") in LONG_FORM else 1,
+                                   0 if ids[v["claim_id"]].get("item_summary") else 1))
+        for v in voices:
+            c = ids[v["claim_id"]]
+            if c.get("url") and all(c["url"] != u for _, u, _ in picks):
+                picks.append((side, c["url"], v.get("speaker") or c.get("source_name") or "source"))
+                break
+    return " · ".join(f"{side.title()}: [{who}]({url})" for side, url, who in picks) or "–"
+
+
 def consensus_section(llm, settings: Settings, states: list[DebateState], claims_by_id: dict[int, dict],
-                      snap: Snapshot) -> TableOut | None:
+                      snap: Snapshot, db=None) -> TableOut | None:
     states = [s for s in states if s.speakers >= 3 and s.majority][:5]
     if not states:
         return None
-    blocks, ids = [], {}
+    ids: dict[int, dict] = {}
+    if db is not None:
+        want = [v.get("claim_id") for s in states for v in s.dissenters + s.changed + s.latest]
+        from ..analysis.extract import claim_dict
+        ids = {c["id"]: c for c in (claim_dict(r) for r in db.claims_by_ids(want))}
+    ids = {**ids, **{k: v for k, v in claims_by_id.items()}}
+    blocks = []
     for s in states:
         lines = [f"Debate {s.key}: {s.question} (majority {s.majority}, {int(s.share * 100)}% of "
                  f"{s.speakers} voices; crowded={s.crowded}; cracking={s.cracking})"]
-        for v in s.dissenters + s.changed + s.latest[:6]:
-            c = claims_by_id.get(v.get("claim_id"))
+        for v in s.dissenters + s.changed + s.latest[:8]:
+            c = ids.get(v.get("claim_id"))
             if c:
-                ids[c["id"]] = c
                 tag = "dissenter" if v in s.dissenters else "changed view" if v in s.changed else v.get("stance")
-                lines.append(f"  [c{c['id']}] {v['speaker']} ({tag}): {c['claim']}")
+                lines.append(f"  [c{c['id']}] {v['speaker']} ({tag}, {v.get('date', '')}): {c['claim']}")
         blocks.append("\n".join(lines))
     res = _json(llm, system=P.CONSENSUS, user="\n\n".join(blocks), schema=P.CONSENSUS_SCHEMA,
-                purpose="write_consensus", max_tokens=1200) or {"rows": []}
+                purpose="write_consensus", max_tokens=2000) or {"rows": []}
     notes = {r.get("key"): r.get("note", "") for r in res.get("rows", [])}
     rows, cited, problems = [], set(), []
     for s in states:
@@ -379,7 +428,8 @@ def consensus_section(llm, settings: Settings, states: list[DebateState], claims
             change += f"; {len(s.changed)} changed view"
         note, cids, pr = clean(notes.get(s.key, ""), ids, snap, [str(int(s.share * 100))])
         problems += pr
-        rows.append({"debate": s.question, "crowd": crowd, "change": change, "note": note or "–"})
+        rows.append({"debate": s.question, "crowd": crowd, "change": change, "note": note or "–",
+                     "read": _debate_reading(s, ids)})
         cited |= cids
     return TableOut("Consensus check", rows, cited, problems)
 

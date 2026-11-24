@@ -14,6 +14,7 @@ import io
 import itertools
 import json
 import math
+import re
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 
@@ -31,7 +32,7 @@ from ..market.snapshot import Snapshot
 from ..settings import Settings
 from ..util import log
 from . import prompts as P
-from ..analysis.checks import CITE
+from ..analysis.checks import CITE, tidy
 from .sections import claim_line, clean, select
 
 CONVICTION_COLOR = {"High": "green", "Medium": "orange", "Low": "gray"}
@@ -55,6 +56,7 @@ class Idea:
     pitch: str = ""            # the markdown before the briefing's chart is put in
     score: int = 0             # the reviewer's 1-10 score
     critique: str = ""
+    best_of_day: bool = False  # nothing cleared the bar; the strongest candidate, with its objection shown
 
 
 def universe(settings: Settings) -> dict[str, str]:
@@ -187,12 +189,16 @@ def thesis_check(llm, db: DB, settings: Settings, claims: list[dict], snap: Snap
 
 
 def book_markdown(checks: list[dict], updates: list[dict], dashboard_id: str | None) -> str:
-    """Table of open ideas: day, return, and whether the thesis is playing out. Followed ideas first (⭐)."""
+    """Table of the ideas the reader follows: day, return, and whether the thesis is playing out."""
     rows = {c["id"]: c for c in checks}
-    live = [rows.get(u["id"], u) for u in updates]
+    live = [rows.get(u["id"], u) for u in updates if u["following"]]
+    link = f"[Trade idea dashboard](notion:{dashboard_id})" if dashboard_id else "the trade idea dashboard"
     if not live:
-        return ""
-    live.sort(key=lambda u: (not u["following"], u["status"] != "Open", -(u.get("day") or 0)))
+        n = sum(1 for u in updates if u["status"] == "Open")
+        still = f" {n} pitched idea{'s are' if n != 1 else ' is'} still open there." if n else ""
+        return (f"*You aren't following any ideas yet. Tick **Following** on an idea in {link} and it will be "
+                f"tracked here every morning.{still}*")
+    live.sort(key=lambda u: (u["status"] != "Open", -(u.get("day") or 0)))
     lines = ["| Idea | Day | Return | Thesis | What changed |", "|---|---|---|---|---|"]
     for u in live:
         pnl = f"{u['pnl'] * 100:+.1f}%".replace("-", "−")
@@ -202,12 +208,10 @@ def book_markdown(checks: list[dict], updates: list[dict], dashboard_id: str | N
         else:
             st = u.get("thesis_status") or "–"
             thesis = f'<span color="{STATUS_COLOR.get(st, "gray")}">{st}</span>' if st != "–" else "–"
-            note, day = u.get("thesis_note") or "", f"{u['day']} of {u['max_days']}"
-        star = "⭐ " if u["following"] else ""
-        lines.append(f"| {star}Long {u['long']} / short {u['short']} | {day} | <span color=\"{col}\">{pnl}</span> | "
+            note, day = u.get("thesis_note") or "Not checked today", f"{u['day']} of {u['max_days']}"
+        lines.append(f"| Long {u['long']} / short {u['short']} | {day} | <span color=\"{col}\">{pnl}</span> | "
                      f"{thesis} | {note} |")
-    link = f"\n*⭐ = ideas you follow. Full tracker: [Trade idea dashboard](notion:{dashboard_id}).*" if dashboard_id else ""
-    return "\n".join(lines) + link
+    return "\n".join(lines) + f"\n*Every open idea, followed or not, is tracked in {link}.*"
 
 
 def following_markdown(updates: list[dict], dashboard_id: str | None) -> str:
@@ -318,6 +322,7 @@ def generate(settings: Settings, db: DB, llm, prices: Prices, states: list[Debat
     names: dict[str, str] = {}
 
     kept: list[Idea] = []
+    dropped: list[Idea] = []
     tried: set[tuple[str, str]] = set()
     notes: list[str] = []            # why candidates failed, fed back to the next round
     used: set[str] = set()
@@ -371,6 +376,7 @@ def generate(settings: Settings, db: DB, llm, prices: Prices, states: list[Debat
             if idea.score >= min_score or idea.score == 0:
                 kept.append(idea)
             else:
+                dropped.append(idea)
                 used.difference_update({idea.spec["long"], idea.spec["short"]})
                 notes.append(f"{idea.spec['long']}/{idea.spec['short']}: reviewer scored it {idea.score}/10: "
                              f"{idea.critique}")
@@ -383,6 +389,18 @@ def generate(settings: Settings, db: DB, llm, prices: Prices, states: list[Debat
         log.info("No against-consensus idea passed today")
     if len(kept) < n_lo:
         log.warning("Only %d trade ideas cleared review today", len(kept))
+    if not kept and dropped:
+        # The reader wants a pitch every day: give the strongest candidate, with the reviewer's objection.
+        best = max(dropped, key=lambda i: i.score)
+        best.best_of_day = True
+        if best.critique:
+            push = f"**Where the reviewer pushed back:** {tidy(best.critique).rstrip('.')}."
+            best.markdown = re.sub(r"(\*\*What would prove it wrong:\*\*[^\n]*)", lambda m: m.group(1) + "\n" + push,
+                                   best.markdown, count=1)
+            best.pitch = best.markdown
+        kept = [best]
+        log.info("Pitching today's strongest candidate %s/%s (score %s)", best.spec["long"], best.spec["short"],
+                 best.score)
     kept.sort(key=lambda i: -i.score)
     return kept[:n_hi]
 

@@ -26,6 +26,22 @@ GROQ_CHAT_MODEL = os.environ.get("GROQ_CHAT_MODEL", "openai/gpt-oss-120b")
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 
+_DROP = {"minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "minLength", "maxLength",
+         "minItems", "maxItems", "pattern"}
+
+
+def strict_schema(schema: Any) -> Any:
+    """Copy of a JSON schema fit for structured outputs: objects closed, unsupported limits removed."""
+    if isinstance(schema, dict):
+        out = {k: strict_schema(v) for k, v in schema.items() if k not in _DROP}
+        if out.get("type") == "object":
+            out.setdefault("additionalProperties", False)
+        return out
+    if isinstance(schema, list):
+        return [strict_schema(v) for v in schema]
+    return schema
+
+
 class LLMUnavailable(RuntimeError):
     """Raised when neither provider can serve a call (the caller degrades gracefully)."""
 
@@ -85,7 +101,12 @@ class LLM:
             except Exception as e:
                 log.warning("Claude call failed for %s (%s); trying fallback", purpose, e)
         if fallback == "groq" and self.groq_key:
-            return self._groq_json(purpose, system, user, schema, max_tokens)
+            try:
+                return self._groq_json(purpose, system, user, schema, max_tokens)
+            except LLMUnavailable:
+                raise
+            except Exception as e:
+                raise LLMUnavailable(f"Fallback failed for {purpose}: {e}") from e
         raise LLMUnavailable(f"No model available for {purpose}")
 
     def text(self, *, tier: str, purpose: str, system: str, user: str, max_tokens: int = 3000) -> str:
@@ -96,30 +117,66 @@ class LLM:
             except Exception as e:
                 log.warning("Claude call failed for %s (%s); trying fallback", purpose, e)
         if fallback == "groq" and self.groq_key:
-            return self._groq_text(purpose, system, user, max_tokens)
+            try:
+                return self._groq_text(purpose, system, user, max_tokens)
+            except LLMUnavailable:
+                raise
+            except Exception as e:
+                raise LLMUnavailable(f"Fallback failed for {purpose}: {e}") from e
         raise LLMUnavailable(f"No model available for {purpose}")
 
     # -- Claude ----------------------------------------------------------------
+    def _budget(self, max_tokens: int) -> int:
+        """Claude 5.5 models always think, and thinking counts toward max_tokens. Leave room for it."""
+        return min(max(max_tokens * 4, 16_000), 64_000)
+
+    def _create(self, kwargs: dict, purpose: str):
+        """One call, retried once with double the budget if the answer was cut off."""
+        resp = self._anthropic.messages.create(**kwargs)
+        self._log_claude(kwargs["model"], resp, purpose)
+        if getattr(resp, "stop_reason", None) == "max_tokens" and kwargs["max_tokens"] < 64_000:
+            log.warning("%s ran out of room at %d tokens; retrying with more", purpose, kwargs["max_tokens"])
+            kwargs = {**kwargs, "max_tokens": min(kwargs["max_tokens"] * 2, 64_000)}
+            resp = self._anthropic.messages.create(**kwargs)
+            self._log_claude(kwargs["model"], resp, purpose)
+        if getattr(resp, "stop_reason", None) == "max_tokens":
+            raise ValueError(f"{purpose}: answer cut off at {kwargs['max_tokens']} tokens")
+        return resp
+
     def _claude_json(self, model, purpose, system, user, schema, max_tokens) -> dict:
+        """Structured outputs (output_config.format). Opus 5.5 and Sonnet 5.5 reject forced tool use
+        with a 400, so the old forced-tool route left every answer to a loose 'auto' mode where
+        thinking ate the budget and answers came back cut off or empty. Tool use stays as a fallback."""
+        base = dict(model=model, max_tokens=self._budget(max_tokens), system=system,
+                    messages=[{"role": "user", "content": user}])
+        no_structured = getattr(self, "_no_structured", set())
+        self._no_structured = no_structured
+        if model not in no_structured:
+            try:
+                resp = self._create({**base, "output_config": {"format": {
+                    "type": "json_schema", "schema": strict_schema(schema)}}}, purpose)
+                text = "".join(getattr(b, "text", "") for b in resp.content if getattr(b, "type", "") == "text")
+                return json.loads(text)
+            except Exception as e:
+                if "output_config" not in str(e) and "json_schema" not in str(e) and "schema" not in str(e):
+                    raise
+                log.warning("Structured output refused for %s (%s); using tool use", model, e)
+                no_structured.add(model)
         tool = {"name": "submit", "description": "Submit the structured result.", "input_schema": schema}
-        kwargs = dict(model=model, max_tokens=max_tokens, system=system,
-                      messages=[{"role": "user", "content": user}], tools=[tool])
-        # Some models (e.g. with extended thinking on by default) refuse a forced tool. Remember
-        # which ones, so later calls go straight to "auto" instead of failing once each time.
+        kwargs = {**base, "tools": [tool],
+                  "system": system + "\n\nRespond only by calling the `submit` tool once."}
         no_force = getattr(self, "_no_forced_tool", set())
         self._no_forced_tool = no_force
         resp = None
         if model not in no_force:
             try:
-                resp = self._anthropic.messages.create(**kwargs, tool_choice={"type": "tool", "name": "submit"})
+                resp = self._create({**kwargs, "tool_choice": {"type": "tool", "name": "submit"}}, purpose)
             except Exception as e:
-                if "tool_choice" not in str(e):
+                if "tool" not in str(e):
                     raise
                 no_force.add(model)
         if resp is None:
-            kwargs["system"] = system + "\n\nRespond only by calling the `submit` tool once."
-            resp = self._anthropic.messages.create(**kwargs, tool_choice={"type": "auto"})
-        self._log_claude(model, resp, purpose)
+            resp = self._create({**kwargs, "tool_choice": {"type": "auto"}}, purpose)
         for block in resp.content:
             if getattr(block, "type", "") == "tool_use":
                 return dict(block.input)
@@ -131,14 +188,14 @@ class LLM:
 
     def _claude_text(self, model, purpose, system, user, max_tokens) -> str:
         resp = self._anthropic.messages.create(
-            model=model, max_tokens=max_tokens, system=system,
+            model=model, max_tokens=self._budget(max_tokens), system=system,
             messages=[{"role": "user", "content": user}],
         )
         self._log_claude(model, resp, purpose)
-        text = "".join(getattr(b, "text", "") for b in resp.content)
+        text = "".join(getattr(b, "text", "") for b in resp.content if getattr(b, "type", "text") == "text")
         if getattr(resp, "stop_reason", None) == "max_tokens":
             from .analysis.checks import trim_incomplete
-            log.warning("%s hit its %d-token limit; trimming the unfinished sentence", purpose, max_tokens)
+            log.warning("%s hit its token limit; trimming the unfinished sentence", purpose)
             text = trim_incomplete(text)
         return text
 
