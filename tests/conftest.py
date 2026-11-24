@@ -42,7 +42,7 @@ def synthetic_prices(tickers: list[str], days: int = 400, seed: int = 7) -> pd.D
 @pytest.fixture
 def fake_prices(db):
     def fetch(tickers, period="2y"):
-        return synthetic_prices(tickers)
+        return synthetic_prices([t for t in tickers if "NOPRICE" not in t])   # NOPRICE: an unlisted name
     return Prices(db, fetch=fetch, cross_check=False)
 
 
@@ -122,4 +122,45 @@ def fake_responder(purpose: str, system: str, user: str):
                 "### What to watch\n- The next OPEC meeting")
     if purpose.startswith("write_"):
         return "Voices are turning bearish on AI spending [c1]."
+    if purpose == "pitch_candidates":
+        return {"candidates": [
+            {"ticker": "NOPRICE.XX", "name": "Ghost plc", "direction": "Long", "sector": "Elsewhere", "market": "UK",
+             "variant_view": "x", "why_now": "x", "peers": [], "cites": []},
+            {"ticker": "LSEG.L", "name": "London Stock Exchange Group", "direction": "Long", "sector": "Financials",
+             "market": "UK", "variant_view": "The AI fear is aimed at a fifth of revenue.",
+             "why_now": "February results and 2027 guidance.", "peers": ["ICE", "CME"], "cites": [1]}]}
+    if purpose == "pitch_research":
+        return ("Business: Data & Analytics is 44% of income [LSEG](https://www.lseg.com/results). "
+                "Q3 income grew 8.8% against 7.8% expected [HL](https://www.hl.co.uk/lseg). Results on 26 Feb 2027.",
+                [{"url": "https://www.lseg.com/results", "title": "LSEG results"}])
+    if purpose in ("pitch_write", "pitch_rewrite"):
+        good = purpose == "pitch_rewrite" or "Fix these" in user
+        return {
+            "headline": "Beat-and-raise data plumbing priced for no growth",
+            "summary": "Q3 income grew 8.8% against 7.8% expected [HL](https://www.hl.co.uk/lseg). "
+                       "The price assumes growth stops soon.",
+            "business": {"plain_english": "LSEG sells market data and runs trading venues.",
+                         "segments": [{"name": "Data & Analytics", "what": "Terminals and feeds",
+                                       "who_pays": "Banks, by subscription", "share": "44%", "growth": "5%"}]},
+            "industry": {"how_it_works": "Exchanges are natural monopolies.", "debate": "Does AI kill the terminal?",
+                         "competitors": [{"area": "Terminals", "names": "Bloomberg, FactSet"}]},
+            "market_thinks": "AI will hollow out the terminal.", "we_think": "Most revenue is plumbing.",
+            "priced_in": ["The price implies only a few years of growth (our calculation)."],
+            "where_we_differ": ["2027 growth beats consensus."],
+            "theses": [{"title": "The AI fear is aimed at a fifth of the business", "points": ["Markets grew fastest."]},
+                       {"title": "It is beating and raising", "points": ["Fee income rose 12.34% this quarter."]},
+                       {"title": "An activist pushes the re-rating", "points": ["Elliott wants buybacks."]}],
+            "catalysts": [{"date": "26 Feb 2027", "event": "FY results", "need_to_see": "2027 guidance above consensus"}],
+            "risks": [{"risk": "Buybacks fall", "why_it_matters": "Returns drop sharply", "what_we_watch": "February update"}],
+            "wrong_if": ["2027 guidance below consensus."],
+            "base": {"price": 115.0, "how": "DCF base case"}, "bull": {"price": 125.0, "how": "Lower cost of equity"},
+            "bear": {"price": 85.0, "how": "Lower multiple"},
+            "why_now": "Results arrive inside the window.", "conviction": "High" if good else "Medium",
+            "conviction_reason": "Evidence and timing line up."}
+    if purpose == "pitch_review":
+        rewritten = '"conviction": "High"' in user
+        return {"score": 8 if rewritten else 5, "critique": "Catalysts too thin." if not rewritten else "Solid.",
+                "fixes": [] if rewritten else ["Add more dated catalysts."]}
+    if purpose == "pitch_check":
+        return {"rows": []}
     raise AssertionError(f"unexpected purpose {purpose}")

@@ -62,7 +62,15 @@ settings_source: notion        # Notion settings databases are the live copy;
 following:
   stocks: [ANT]        # Notion Settings row "Stocks I follow": a section per name, with news and views
 
-trade_ideas:
+pitch:                               # one single-stock long or short a day (replaced pair trades, 24 Nov 2026)
+  horizon_months: 12                 # pitched as 6-12 months; tracked to 12, then closed
+  min_review_score: 7                # below this the pitch still runs, with the reviewer's pushback shown
+  candidates_researched: 2           # web-research at most two candidates a day (cost control)
+  max_searches: 12                   # web searches per researched candidate ($10 per 1,000)
+  min_market_cap_usd: 2000000000
+  no_repeat_days: 60                 # a stock pitched in the last 60 days (or still open) is not pitched again
+
+trade_ideas:                         # the old pair-trade engine; kept for its settings, no longer run
   per_day: [3, 4]
   min_against_crowded_consensus: 1
   max_per_sector: 2

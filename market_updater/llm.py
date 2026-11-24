@@ -125,6 +125,39 @@ class LLM:
                 raise LLMUnavailable(f"Fallback failed for {purpose}: {e}") from e
         raise LLMUnavailable(f"No model available for {purpose}")
 
+    def research(self, *, tier: str, purpose: str, system: str, user: str, max_searches: int = 12,
+                 max_tokens: int = 8000) -> tuple[str, list[dict]]:
+        """Claude with live web search (no fallback: Groq can't search). Returns (text, sources),
+        sources being [{"url", "title"}] in the order first seen. Raises LLMUnavailable."""
+        model, _ = self._model_for(tier)
+        if not self._claude_allowed(tier):
+            raise LLMUnavailable(f"Claude not available for {purpose}")
+        tools = [{"type": "web_search_20250305", "name": "web_search", "max_uses": max_searches}]
+        messages = [{"role": "user", "content": user}]
+        texts, sources, seen = [], [], set()
+        resp = None
+        for _ in range(4):                       # pause_turn: resend to let the search loop finish
+            resp = self._send(dict(model=model, max_tokens=self._budget(max_tokens), system=system,
+                                   messages=messages, tools=tools))
+            self._log_claude(model, resp, purpose)
+            searches = getattr(getattr(resp.usage, "server_tool_use", None), "web_search_requests", 0) or 0
+            if searches:
+                self.db.log_usage("anthropic", "web_search", 0, 0, searches * 0.01, purpose)
+            for b in resp.content:
+                kind = getattr(b, "type", "")
+                if kind == "text":
+                    texts.append(b.text)
+                elif kind == "web_search_tool_result" and isinstance(getattr(b, "content", None), list):
+                    for r in b.content:
+                        url = getattr(r, "url", None)
+                        if url and url not in seen:
+                            seen.add(url)
+                            sources.append({"url": url, "title": getattr(r, "title", "") or url})
+            if getattr(resp, "stop_reason", None) != "pause_turn":
+                break
+            messages = [{"role": "user", "content": user}, {"role": "assistant", "content": resp.content}]
+        return "".join(texts).strip(), sources
+
     # -- Claude ----------------------------------------------------------------
     def _budget(self, max_tokens: int) -> int:
         """Claude 5.5 models always think, and thinking counts toward max_tokens. Leave room for it."""
@@ -262,6 +295,11 @@ class FakeLLM:
     def json(self, *, tier, purpose, system, user, schema, max_tokens=4000):
         self.calls.append((purpose, user))
         return self.responder(purpose, system, user)
+
+    def research(self, *, tier, purpose, system, user, max_searches=12, max_tokens=8000):
+        self.calls.append((purpose, user))
+        out = self.responder(purpose, system, user)
+        return (out, []) if isinstance(out, str) else tuple(out)
 
     def text(self, *, tier, purpose, system, user, max_tokens=3000):
         self.calls.append((purpose, user))
