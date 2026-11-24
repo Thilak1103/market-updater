@@ -13,6 +13,7 @@ from ..publish import notion as N
 from ..util import get_with_retry, html_to_text, log
 from . import Item
 from .rss import discover_feed
+from .youtube import is_youtube, read_video
 
 
 def process_inbox(notion: N.Notion) -> list[Item]:
@@ -27,13 +28,31 @@ def process_inbox(notion: N.Notion) -> list[Item]:
             if not link and (tag == "Add source" or len(notion.page_text(row["id"])) < 200):
                 continue
             if tag == "Add source":
-                feed = discover_feed(link)
+                if is_youtube(link):
+                    from .youtube import channel_feed
+                    feed, kind = channel_feed(link), "YouTube"
+                else:
+                    feed = discover_feed(link)
+                    kind = "RSS" if feed else "Web page"
                 notion.create_page("sources", {
-                    "Source": N.title(title), "Type": N.select("RSS" if feed else "Web page"),
+                    "Source": N.title(title), "Type": N.select(kind),
                     "Feed URL": N.url(feed or link), "Active": N.checkbox(False),
                     "Needs checking": N.checkbox(True),
                     "Notes": N.rich(f"Added from Inbox. {note}".strip()),
                 })
+            elif is_youtube(link) and tag != "Add source":
+                pasted = notion.page_text(row["id"])
+                vid = read_video(link) if len(pasted) < 200 else {**read_video(link, allow_audio=False), "text": pasted}
+                if not vid["text"]:
+                    log.warning("YouTube video %s could not be read (no captions, audio blocked). Open the "
+                                "video, click '...more' then 'Show transcript', and paste it into the Inbox "
+                                "row's page to include it", link)
+                    continue
+                name = vid["channel"] or "YouTube"
+                text = f"Thilak's note: {note}\n\n{vid['text']}" if note else vid["text"]
+                out.append(Item(url=vid.get("url") or link, title=N.prop(row, "Title") or vid["title"] or title,
+                                text=text, source_name=f"{name} (YouTube)", source_type="inbox",
+                                kind="inbox", published=datetime.now(timezone.utc)))
             else:
                 if link and link.split("?")[0].lower().endswith((".mp3", ".m4a", ".wav")):
                     out.append(Item(url=link, title=title, text=note, source_name="Inbox",

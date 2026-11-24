@@ -77,7 +77,11 @@ def fetch_transcript(url: str) -> str:
 
 def fetch_feed(source: Source, since: datetime, max_items: int = 8,
                fetch_full: bool = True) -> list[Item]:
-    r = get_with_retry(source.feed_url)
+    feed_url = source.feed_url
+    if source.type == "youtube":
+        from .youtube import channel_feed
+        feed_url = channel_feed(feed_url) or feed_url
+    r = get_with_retry(feed_url)
     r.raise_for_status()
     feed = feedparser.parse(r.content)
     if feed.bozo and not feed.entries:
@@ -92,6 +96,13 @@ def fetch_feed(source: Source, since: datetime, max_items: int = 8,
             continue
         html = _entry_html(e)
         text = html_to_text(html)
+        if source.type == "youtube":
+            from .youtube import captions, video_id
+            vid = video_id(link)
+            words = captions(vid) if vid else ""
+            if words:
+                text = f"{text}\n\nTranscript:\n{words}" if text else words
+            fetch_full = False                  # the watch page itself is just scripts
         audio = _audio(e) if source.type == "podcast" else None
         if audio:
             turl = _transcript_url(e)
@@ -115,7 +126,7 @@ def fetch_feed(source: Source, since: datetime, max_items: int = 8,
         out.append(Item(
             url=link, title=e.get("title", "").strip() or link, text=text,
             source_name=source.name, source_type=source.type,
-            kind="podcast" if source.type == "podcast" else "article",
+            kind="podcast" if source.type in ("podcast", "youtube") else "article",
             published=published, sectors=source.sectors, audio_url=audio,
         ))
         if len(out) >= max_items:

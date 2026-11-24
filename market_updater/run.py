@@ -15,6 +15,7 @@ from .analysis import extract as X
 from .analysis import views as V
 from .compose import earnings_review as ER
 from .compose import ideas as I
+from .compose import saved as SV
 from .compose import sections as S
 from .db import DB
 from .ingest.collect import collect_all, lookback
@@ -178,7 +179,8 @@ def daily(*, dry_run: bool = False, settings: Settings | None = None, db: DB | N
         idea.markdown = idea.markdown.replace("{{chart}}", "")
     dash = (settings.get("notion.pages", {}) or {}).get("dashboard")
     md, cited = assemble(settings, day, snap, story, ideas, idea_updates, core, reviews, els, cons, deep,
-                         db, cite_map, pending, dash, checks, followed)
+                         db, cite_map, pending, dash, checks, followed,
+                         saved=_step("saved items", problems, SV.saved_items, db, now, default=[]))
     failed_core = sum(1 for s in core if not s or not s.blurb)
     status = "Published" if failed_core == 0 and story else "Partial"
 
@@ -285,7 +287,7 @@ def _table(head: list[str], rows: list[list[str]]) -> str:
 def assemble(settings, day, snap, story, ideas, idea_updates, core, reviews, els, cons, deep,
              db, claims_by_id, pending: list[str] | None = None,
              dashboard_id: str | None = None, checks: list[dict] | None = None,
-             followed: list | None = None) -> tuple[str, set[int]]:
+             followed: list | None = None, saved: list | None = None) -> tuple[str, set[int]]:
     from .analysis.checks import link_citations, tidy
 
     parts: list[str] = []
@@ -323,6 +325,8 @@ def assemble(settings, day, snap, story, ideas, idea_updates, core, reviews, els
     if followed:
         from .compose import followed as FO
         add("📌 Stocks you follow", FO.markdown(followed), {c for f in followed for c in f.cited})
+    if saved:
+        add("📥 You saved", SV.markdown(saved))
 
     # Core sectors
     blocks = []

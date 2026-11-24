@@ -12,3 +12,5 @@ python-dateutil>=2.9
 tzdata
 pytest>=8.0
 matplotlib>=3.8
+youtube-transcript-api>=1.2
+yt-dlp>=2025.1.1

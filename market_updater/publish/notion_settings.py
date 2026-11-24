@@ -8,7 +8,7 @@ from .notion import Notion, prop
 
 TYPE_MAP = {
     "substack": "substack", "rss": "rss", "email": "email", "web page": "web_page",
-    "podcast": "podcast", "bluesky": "bluesky", "press mentions": "press_mentions", "api": "api",
+    "podcast": "podcast", "youtube": "youtube", "bluesky": "bluesky", "press mentions": "press_mentions", "api": "api",
 }
 COVERAGE_MAP = {"core": "core", "elsewhere only": "elsewhere", "off": "off"}
 
