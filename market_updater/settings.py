@@ -102,7 +102,8 @@ class Settings:
         for s in self.sectors:
             if s.coverage != "off":
                 out += [t for t in s.watchlist if t not in out]
-        return out
+        followed = [str(t).strip().upper() for t in (self.get("following.stocks") or [])]
+        return out + [t for t in followed if t and t not in out]
 
     def sector_of_ticker(self, ticker: str) -> str | None:
         for s in self.sectors:
@@ -225,6 +226,7 @@ _SETTING_MAP = {
     "target length": ("budget.target_words", "range"),
     "claude credit guard": ("models.credit_guard.move_extraction_to_fallback_at_usd", "float"),
     "substack discovery shortlist": ("substack_discovery.weekly_shortlist", "int"),
+    "stocks i follow": ("following.stocks", "tickers"),
 }
 
 
@@ -240,6 +242,8 @@ def _nums(s: str) -> list[float]:
 
 
 def parse_setting(kind: str, value: str) -> Any:
+    if kind == "tickers":   # "ANT, NVDA" -> ["ANT", "NVDA"]
+        return [t.upper() for t in re.split(r"[\s,;]+", value or "") if t]
     n = _nums(value)
     if not n:
         raise ValueError(f"no number in {value!r}")

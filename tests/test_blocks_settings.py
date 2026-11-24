@@ -91,3 +91,8 @@ def test_append_splits_deep_trees():
     assert "children" not in first[0]["callout"] and first[1]["type"] == "paragraph"
     assert calls[1][0] == "/blocks/b1-0/children"        # the callout's toggle goes in second
     assert calls[1][1]["children"][0]["toggle"]["children"][0]["type"] == "table"
+
+
+def test_stocks_i_follow_setting():
+    from market_updater.settings import parse_setting
+    assert parse_setting("tickers", "ANT, nvda; TSLA") == ["ANT", "NVDA", "TSLA"]

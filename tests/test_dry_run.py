@@ -81,6 +81,7 @@ def test_friday_dry_run_builds_every_section(settings, db, fake_prices, monkeypa
     assert "🎯 **Target**" in md and "🛑 **Stop**" in md and "⏳ **Horizon**" in md and "Conviction" not in md
     assert "Fee income" not in md          # the long case with an unsourced number was cut
     assert "TSCO.L" in md
+    assert "## 📌 Stocks you follow" in md and "(ANT)" in md
     # The reviewer scored Goldman/Morgan Stanley 3/10, so it is not pitched at all, even though
     # that leaves only two ideas
     assert "Goldman Sachs" not in md, md[md.find("Goldman") - 400:md.find("Goldman") + 200]
