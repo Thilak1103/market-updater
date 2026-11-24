@@ -232,8 +232,10 @@ def _deep_dive(settings: Settings, db: DB, llm, snap, day: date, now: datetime):
         sec = settings.sector(top["sector"])
         if not sec or sec.core:
             continue
-        out = S.deep_dive(llm, settings, top["sector"], f"{prev.strftime('%A')}: {top['why']}", snap, recent,
-                          _words(settings, "deep_dive", 600))
+        # The logged reasons carry the moves of the session before that run, which can clash with
+        # today's table, so only the sector is passed; the table gives the numbers.
+        out = S.deep_dive(llm, settings, top["sector"], f"it had the most alert-level moves recently ({top['n']})",
+                          snap, recent, _words(settings, "deep_dive", 600))
         if out and out.markdown:
             return out
     return None

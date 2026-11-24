@@ -130,14 +130,22 @@ class LLM:
         """Claude 5.5 models always think, and thinking counts toward max_tokens. Leave room for it."""
         return min(max(max_tokens * 4, 16_000), 64_000)
 
+    def _send(self, kwargs: dict):
+        """Stream the call: the SDK refuses non-streamed calls with large max_tokens (over ~21K)."""
+        stream = getattr(self._anthropic.messages, "stream", None)
+        if stream is None:                       # test doubles
+            return self._anthropic.messages.create(**kwargs)
+        with stream(**kwargs) as s:
+            return s.get_final_message()
+
     def _create(self, kwargs: dict, purpose: str):
         """One call, retried once with double the budget if the answer was cut off."""
-        resp = self._anthropic.messages.create(**kwargs)
+        resp = self._send(kwargs)
         self._log_claude(kwargs["model"], resp, purpose)
         if getattr(resp, "stop_reason", None) == "max_tokens" and kwargs["max_tokens"] < 64_000:
             log.warning("%s ran out of room at %d tokens; retrying with more", purpose, kwargs["max_tokens"])
             kwargs = {**kwargs, "max_tokens": min(kwargs["max_tokens"] * 2, 64_000)}
-            resp = self._anthropic.messages.create(**kwargs)
+            resp = self._send(kwargs)
             self._log_claude(kwargs["model"], resp, purpose)
         if getattr(resp, "stop_reason", None) == "max_tokens":
             raise ValueError(f"{purpose}: answer cut off at {kwargs['max_tokens']} tokens")
@@ -187,10 +195,8 @@ class LLM:
         raise ValueError("Claude returned no tool call")
 
     def _claude_text(self, model, purpose, system, user, max_tokens) -> str:
-        resp = self._anthropic.messages.create(
-            model=model, max_tokens=self._budget(max_tokens), system=system,
-            messages=[{"role": "user", "content": user}],
-        )
+        resp = self._send(dict(model=model, max_tokens=self._budget(max_tokens), system=system,
+                               messages=[{"role": "user", "content": user}]))
         self._log_claude(model, resp, purpose)
         text = "".join(getattr(b, "text", "") for b in resp.content if getattr(b, "type", "text") == "text")
         if getattr(resp, "stop_reason", None) == "max_tokens":
