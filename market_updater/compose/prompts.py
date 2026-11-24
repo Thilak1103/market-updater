@@ -61,6 +61,11 @@ You cover {sector} (sub-sectors: {subsectors}) for a daily buy-side briefing. Re
   matters to this sector) and, for podcasts, videos and long research, "points": three to five
   bullets on the specific arguments, each attributed to the person who made it, with their
   numbers. Never restate the sector's price moves; the reader has them. Cite with [cN].
+  Items tagged EARLIER came out in the last three weeks and have not been recommended yet. Today's
+  items come first, but the list must never be empty: if today's items are thin, fill it with the
+  best EARLIER pieces, aiming for at least three in total, and say in the summary why each is still
+  worth reading now. If the blurb or a live debate names a theme (say, GLP-1 or a price war), include
+  the best piece on that theme when one exists.
 - filtered: one short sentence describing what you left out and why, or "" if nothing.
 """
 

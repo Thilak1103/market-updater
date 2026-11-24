@@ -61,7 +61,7 @@ def test_no_repeats_and_book_table(db):
     upd = [{"id": 2, "long": "JPM", "short": "BAC", "pnl": 0.012, "status": "Open", "outcome": "Open", "day": 4,
             "max_days": 20, "progress": 0.3, "following": True, "reason": None}]
     md = I.book_markdown([dict(upd[0], thesis_status="Needs a tweak", thesis_note="Catalyst moved to January.")], upd, "abc")
-    assert "| ⭐ Long JPM / short BAC | 4 of 20 |" in md and "Needs a tweak" in md and "Catalyst moved" in md
+    assert "| Long JPM / short BAC | 4 of 20 |" in md and "Needs a tweak" in md and "Catalyst moved" in md
 
 
 def test_memory_track_record(db, fake_prices, settings):
@@ -78,3 +78,11 @@ def test_memory_track_record(db, fake_prices, settings):
     tr = MEM.track_record(db)
     assert tr and tr[0]["voice"] == "Vik Sekar" and tr[0]["n"] == 6
     assert "Vik Sekar" in MEM.context(db, date(2026, 11, 20)) and "| Vik Sekar | 6 |" in MEM.scorecard_markdown(db)
+
+
+def test_book_shows_only_followed_ideas():
+    from market_updater.compose import ideas as I
+    upd = [{"id": 1, "long": "MS", "short": "GS", "pnl": 0.01, "status": "Open", "outcome": "Open", "day": 2,
+            "max_days": 20, "progress": 0.1, "following": False, "reason": None}]
+    md = I.book_markdown([], upd, "abc")
+    assert "MS / short GS" not in md and "aren't following any ideas yet" in md and "1 pitched idea is still open" in md

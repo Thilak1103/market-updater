@@ -83,7 +83,7 @@ def test_friday_dry_run_builds_every_section(settings, db, fake_prices, monkeypa
     assert "TSCO.L" in md
     # The reviewer scored Goldman/Morgan Stanley 3/10, so it is not pitched at all, even though
     # that leaves only two ideas
-    assert "Goldman Sachs" not in md and "Only 2 ideas passed" in md
+    assert "Goldman Sachs" not in md, md[md.find("Goldman") - 400:md.find("Goldman") + 200]
     # Elsewhere is a table with a cause, and the sectors are one-paragraph callouts
     assert "| Sector | Move | What's behind it |" in md and "Oil supply news moved the group" in md
     assert "::: callout 💻 blue" in md and "**TMT** — Voices are turning bearish" in md
@@ -104,3 +104,15 @@ def test_model_outage_still_publishes_market_data(settings, db, fake_prices, mon
                   notion=None, now=datetime(2026, 11, 18, 6, 15, tzinfo=timezone.utc), collect=False)
     assert "## 📊 The numbers that matter" in res.markdown and "S&P 500" in res.markdown
     assert res.status == "Partial"
+
+
+def test_a_pitch_every_day_even_when_nothing_clears_review(settings, db, fake_prices, monkeypatch, tmp_path):
+    _offline(monkeypatch, tmp_path)
+    settings.raw["trade_ideas"]["min_review_score"] = 10      # nothing can pass
+    llm = FakeLLM(fake_responder)
+    now = datetime(2026, 11, 20, 6, 15, tzinfo=timezone.utc)
+    md = R.daily(dry_run=True, settings=settings, db=db, llm=llm, prices=fake_prices, notion=None,
+                 now=now, collect=False).markdown
+    assert md.count("::: callout 📈 gray") == 1
+    assert "strongest candidate" in md and "**Where the reviewer pushed back:**" in md
+    assert "You aren't following any ideas yet" in md or "| Idea | Day |" not in md

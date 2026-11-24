@@ -11,6 +11,11 @@ from typing import Any, Iterator
 from .settings import DATA_DIR
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS recommended (
+    item_id INTEGER,
+    date TEXT,
+    section TEXT
+);
 CREATE TABLE IF NOT EXISTS items (
     id INTEGER PRIMARY KEY,
     url TEXT UNIQUE,
@@ -203,6 +208,25 @@ class DB:
             "FROM claims c JOIN items i ON i.id=c.item_id WHERE c.created>=? OR i.published>=? ORDER BY c.id",
             (since.astimezone(timezone.utc).replace(tzinfo=None).isoformat(timespec="seconds"),
              since.astimezone(timezone.utc).isoformat(timespec="seconds")))
+
+    def claims_by_ids(self, ids: list[int]) -> list[sqlite3.Row]:
+        ids = [int(i) for i in ids if i]
+        if not ids:
+            return []
+        marks = ",".join("?" * len(ids))
+        return self.q(
+            "SELECT c.*, i.url, i.title AS item_title, i.source_name, i.source_type, i.kind AS item_kind, "
+            "i.published, i.summary AS item_summary, i.is_subscriber, i.repeat_of "
+            f"FROM claims c JOIN items i ON i.id=c.item_id WHERE c.id IN ({marks})", ids)
+
+    def recommended_since(self, days: int, today: date | None = None) -> set[int]:
+        start = ((today or date.today()) - timedelta(days=days)).isoformat()
+        return {r["item_id"] for r in self.q("SELECT item_id FROM recommended WHERE date>=?", (start,))}
+
+    def mark_recommended(self, day: date, section: str, item_ids: list[int]) -> None:
+        with self.tx() as conn:
+            conn.executemany("INSERT INTO recommended VALUES (?,?,?)",
+                             [(i, day.isoformat(), section) for i in item_ids])
 
     # Usage ------------------------------------------------------------------
     def log_usage(self, provider: str, model: str, inp: int, out: int, cost: float, purpose: str) -> None:
