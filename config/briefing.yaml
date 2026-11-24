@@ -59,6 +59,9 @@ models:
 settings_source: notion        # Notion settings databases are the live copy;
                                # this file is the seed and the nightly backup.
 
+following:
+  stocks: [ANT]        # Notion Settings row "Stocks I follow": a section per name, with news and views
+
 trade_ideas:
   per_day: [3, 4]
   min_against_crowded_consensus: 1

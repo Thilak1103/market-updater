@@ -63,6 +63,7 @@ def _market_tickers(settings: Settings) -> list[str]:
     for s in settings.sectors:
         if s.coverage != "off":
             out += s.proxies + s.watchlist
+    out += [str(t).upper() for t in (settings.get("following.stocks") or [])]
     return sorted(set(out))
 
 
@@ -136,8 +137,13 @@ def daily(*, dry_run: bool = False, settings: Settings | None = None, db: DB | N
                    default=[]) or []
 
     # 6. Writing
-    story = _step("top line", problems, S.market_story, llm, settings, snap, claims)
     library = [X.claim_dict(c) for c in db.claims_since(now - timedelta(days=21))]
+    from .compose import followed as FO
+    fol_names = F.company_names(db, FO.followed_tickers(settings))
+    followed = _step("followed stocks", problems, FO.write, llm, settings, prices, snap,
+                     [c for c in library if c["created"] >= (now - timedelta(days=7)).strftime("%Y-%m-%d")],
+                     fol_names, default=[]) or []
+    story = _step("top line", problems, S.market_story, llm, settings, snap, claims)
     skip = db.recommended_since(21, day)
     core = [_step(f"sector {s.key}", problems, S.sector_section, llm, settings, s, snap, claims,
                   _words(settings, "core_sector", 70), library, skip) for s in settings.core_sectors]
@@ -151,13 +157,19 @@ def daily(*, dry_run: bool = False, settings: Settings | None = None, db: DB | N
             title = getattr(part, "title", None) or getattr(getattr(part, "sector", None), "name", None) or "part"
             problems += [f"{title}: {p}" for p in part.problems[:10]]
 
+    # Citations can point at older claims (backlist reading, consensus voices, followed stocks)
+    cite_map = {c["id"]: c for c in library}
+    if cons and cons.cited:
+        cite_map.update({c["id"]: c for c in (X.claim_dict(r) for r in db.claims_by_ids(list(cons.cited)))})
+    cite_map.update(claims_by_id)
+
     # 7. Reading pages and charts (need Notion), then assemble
     names = F.company_names(db, sorted({r["ticker"] for rows in snap.sector_rows.values() for r in rows}))
     if notion is not None and not dry_run:
         for out in core:
             if out:
                 out.reading_url = _step(f"reading {out.sector.key}", problems, PG.publish_reading, notion, day,
-                                        out, S.reading_markdown(out, snap, names), claims_by_id)
+                                        out, S.reading_markdown(out, snap, names), cite_map)
         for idea in ideas:
             up = notion.upload_file(idea.chart, f"spread-{idea.spec['long']}-{idea.spec['short']}.png") if idea.chart else None
             idea.markdown = idea.markdown.replace(
@@ -166,7 +178,7 @@ def daily(*, dry_run: bool = False, settings: Settings | None = None, db: DB | N
         idea.markdown = idea.markdown.replace("{{chart}}", "")
     dash = (settings.get("notion.pages", {}) or {}).get("dashboard")
     md, cited = assemble(settings, day, snap, story, ideas, idea_updates, core, reviews, els, cons, deep,
-                         db, claims_by_id, pending, dash, checks)
+                         db, cite_map, pending, dash, checks, followed)
     failed_core = sum(1 for s in core if not s or not s.blurb)
     status = "Published" if failed_core == 0 and story else "Partial"
 
@@ -272,7 +284,8 @@ def _table(head: list[str], rows: list[list[str]]) -> str:
 
 def assemble(settings, day, snap, story, ideas, idea_updates, core, reviews, els, cons, deep,
              db, claims_by_id, pending: list[str] | None = None,
-             dashboard_id: str | None = None, checks: list[dict] | None = None) -> tuple[str, set[int]]:
+             dashboard_id: str | None = None, checks: list[dict] | None = None,
+             followed: list | None = None) -> tuple[str, set[int]]:
     from .analysis.checks import link_citations, tidy
 
     parts: list[str] = []
@@ -307,6 +320,9 @@ def assemble(settings, day, snap, story, ideas, idea_updates, core, reviews, els
         idea_md = "*No candidate survived the statistical checks today (correlation and evidence on both legs).*"
     add("🎯 Trade ideas", idea_md, {c for i in ideas for c in i.cited})
     add("📋 Open ideas: is the thesis playing out?", I.book_markdown(checks or [], idea_updates, dashboard_id))
+    if followed:
+        from .compose import followed as FO
+        add("📌 Stocks you follow", FO.markdown(followed), {c for f in followed for c in f.cited})
 
     # Core sectors
     blocks = []
