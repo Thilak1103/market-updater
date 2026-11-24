@@ -59,3 +59,38 @@ def test_saved_section_lists_inbox_items_with_their_summary():
                                               "worth_it": "Yes, minutes 10 to 25."})}])
     assert "**[Private credit cracks](https://www.youtube.com/watch?v=IgvDUUn3uuE)**" in md
     assert "- Defaults rising" in md and "**Worth your time?** Yes" in md
+
+
+def test_apple_podcast_link_resolves_to_audio(monkeypatch):
+    from market_updater.ingest import rss
+
+    class R:
+        status_code = 200
+        def json(self):
+            return {"results": [
+                {"wrapperType": "track", "kind": "podcast", "collectionName": "Prof G Markets"},
+                {"wrapperType": "podcastEpisode", "trackId": 1000803087800, "collectionName": "Prof G Markets",
+                 "trackName": "Aswath Damodaran on Nvidia's Collapse & Anthropic's $1.5T IPO",
+                 "episodeUrl": "https://traffic.megaphone.fm/ep.mp3", "description": "Scott and Ed..."}]}
+    seen = {}
+    def fake_get(url, params=None, **k):
+        seen.update(params or {})
+        return R()
+    monkeypatch.setattr(rss, "get_with_retry", fake_get)
+    ep = rss.apple_episode("https://podcasts.apple.com/gb/podcast/aswath-damodaran-on-nvidias-collapse/"
+                           "id1744631325?i=1000803087800")
+    assert seen["id"] == "1744631325"
+    assert ep["audio_url"].endswith("ep.mp3") and ep["show"] == "Prof G Markets"
+    assert rss.apple_episode("https://example.com/podcast") is None
+
+
+def test_saved_audio_is_transcribed_first():
+    from datetime import datetime, timezone
+    from market_updater.ingest import Item
+    from market_updater.ingest.collect import listening_order
+    now = datetime.now(timezone.utc)
+    a = Item(url="a", title="Fed preview", text="", source_name="Odd Lots", source_type="podcast",
+             kind="podcast", published=now, audio_url="a.mp3")
+    b = Item(url="b", title="Damodaran", text="", source_name="Prof G Markets (podcast)", source_type="inbox",
+             kind="podcast", published=now, audio_url="b.mp3")
+    assert listening_order([a, b], set(), ["fed"])[0] is b

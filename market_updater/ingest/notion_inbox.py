@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from ..publish import notion as N
 from ..util import get_with_retry, html_to_text, log
 from . import Item
-from .rss import discover_feed
+from .rss import apple_episode, discover_feed
 from .youtube import is_youtube, read_video
 
 
@@ -53,6 +53,13 @@ def process_inbox(notion: N.Notion) -> list[Item]:
                 out.append(Item(url=vid.get("url") or link, title=N.prop(row, "Title") or vid["title"] or title,
                                 text=text, source_name=f"{name} (YouTube)", source_type="inbox",
                                 kind="inbox", published=datetime.now(timezone.utc)))
+            elif link and "podcasts.apple.com" in link and (ep := apple_episode(link)):
+                desc = html_to_text(ep["description"]) if "<" in ep["description"] else ep["description"]
+                out.append(Item(url=link, title=N.prop(row, "Title") or ep["title"] or title,
+                                text=(f"Thilak's note: {note}\n\n" if note else "") + desc,
+                                source_name=f"{ep['show']} (podcast)" if ep["show"] else "Inbox",
+                                source_type="inbox", kind="podcast", audio_url=ep["audio_url"],
+                                published=datetime.now(timezone.utc)))
             else:
                 if link and link.split("?")[0].lower().endswith((".mp3", ".m4a", ".wav")):
                     out.append(Item(url=link, title=title, text=note, source_name="Inbox",

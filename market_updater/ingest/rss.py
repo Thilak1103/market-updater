@@ -174,3 +174,32 @@ def podcast_feed_lookup(name: str) -> str | None:
         if res.get("feedUrl") and s > score:
             best, score = res["feedUrl"], s
     return best if score >= 0.3 else None
+
+
+def apple_episode(url: str) -> dict | None:
+    """Resolve an Apple Podcasts episode link (…/id<show>?i=<episode>) to its audio file.
+
+    Uses Apple's free lookup API, which lists a show's recent episodes with their audio URLs."""
+    import re
+    from urllib.parse import parse_qs, urlparse
+
+    u = urlparse(url or "")
+    if "podcasts.apple.com" not in (u.hostname or ""):
+        return None
+    show = re.search(r"/id(\d+)", u.path)
+    ep = (parse_qs(u.query).get("i") or [""])[0]
+    if not show or not ep.isdigit():
+        return None
+    r = get_with_retry("https://itunes.apple.com/lookup",
+                       params={"id": show.group(1), "entity": "podcastEpisode", "limit": 200})
+    if r.status_code != 200:
+        return None
+    show_name = ""
+    for res in r.json().get("results", []):
+        if res.get("kind") == "podcast" or res.get("wrapperType") == "track" and not res.get("episodeUrl"):
+            show_name = res.get("collectionName") or show_name
+        if str(res.get("trackId")) == ep and res.get("episodeUrl"):
+            return {"title": res.get("trackName") or "", "show": res.get("collectionName") or show_name,
+                    "audio_url": res["episodeUrl"], "description": res.get("description") or "",
+                    "published": res.get("releaseDate")}
+    return None

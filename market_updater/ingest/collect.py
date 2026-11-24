@@ -64,7 +64,8 @@ def listening_order(items: list[Item], recap: set[str], interests: list[str]) ->
         blob = f"{it.title} {it.text[:3000]}".lower()
         hits = sum(1 for w in words if w in blob)
         is_recap = it.source_name in recap
-        return (is_recap, -min(hits, 5), -(it.published.timestamp() if it.published else 0))
+        saved = it.source_type == "inbox"       # things Thilak saved himself are transcribed first
+        return (not saved, is_recap, -min(hits, 5), -(it.published.timestamp() if it.published else 0))
     return sorted(items, key=score)
 
 
