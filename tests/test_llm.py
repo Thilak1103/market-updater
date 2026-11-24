@@ -70,3 +70,31 @@ def test_strict_schema_closes_nested_objects():
         "type": "object", "properties": {"b": {"type": "string", "maxLength": 5}}}}}})
     inner = s["properties"]["a"]["items"]
     assert inner["additionalProperties"] is False and "maxLength" not in inner["properties"]["b"]
+
+
+class StreamingMessages:
+    """Like the real SDK: large non-streamed calls are refused, so calls must stream."""
+
+    def __init__(self):
+        self.streamed = []
+
+    def create(self, **kw):
+        raise ValueError("Streaming is required for operations that may take longer than 10 minutes.")
+
+    def stream(self, **kw):
+        from contextlib import contextmanager
+        self.streamed.append(kw)
+
+        @contextmanager
+        def cm():
+            yield NS(get_final_message=lambda: NS(content=[NS(type="text", text='{"ok": 1}')],
+                                                  stop_reason="end_turn", usage=USAGE))
+        return cm()
+
+
+def test_large_budgets_are_streamed(settings, db):
+    llm = LLM(settings, db)
+    msgs = StreamingMessages()
+    llm._anthropic = NS(messages=msgs)
+    assert llm._claude_json("claude-opus-5-5", "trade_ideas", "s", "u", {"type": "object"}, 8000) == {"ok": 1}
+    assert msgs.streamed[0]["max_tokens"] == 32_000

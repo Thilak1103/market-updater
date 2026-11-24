@@ -128,7 +128,8 @@ def link_citations(markdown: str, claims: dict[int, dict]) -> str:
 META = re.compile(
     r"\b(?:the |these |no )?(?:claims?|sources?|data|material|inputs?|tables?)\s+(?:supplied|provided|given|"
     r"available|above|below)\b(?!\s+by\b)|\bclaims? (?:do|does|did) not\b|\bnot (?:covered|mentioned) in the "
-    r"(?:claims|sources|data)\b|\bas an ai\b|\bI (?:don't|do not|cannot|can't) (?:see|find)\b", re.I)
+    r"(?:claims|sources|data)\b|\bas an ai\b|\bI (?:don't|do not|cannot|can't) (?:see|find)\b|\beditor'?s note\b|"
+    r"\bplease (?:confirm|check|verify)\b|\bbefore publishing\b|\bI have used\b|\bthe brief (?:gives|says|states)\b", re.I)
 
 
 def tidy(markdown: str) -> str:
