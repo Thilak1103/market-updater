@@ -82,11 +82,25 @@ def fetch_inbox(settings: Settings, lookback_hours: int = 36, since_dt: datetime
                 published = datetime.now(timezone.utc)
             link = _web_link(html) or f"email:{msg.get('Message-ID', num.decode())}"
             name = re.sub(r"\s*<.*?>", "", _decode(msg.get("From", ""))).strip('" ') or sender
+            name, subject = forwarded_origin(name, subject, text)
             out.append(Item(url=link, title=subject, text=text[:60000], source_name=name,
                             source_type="email", kind="email", published=published,
                             is_subscriber=any(s in sender for s in subscriber_senders)))
     log.info("Email inbox: %d messages", len(out))
     return out
+
+
+FWD = re.compile(r"^\s*(?:fwd?|fw)\s*:\s*", re.I)
+FWD_FROM = re.compile(r"^\s*\*?From:\*?\s*\"?([^<\n\"]+?)\"?\s*(?:<[^>]+>|\[mailto:[^\]]+\])?\s*$", re.I | re.M)
+
+
+def forwarded_origin(name: str, subject: str, text: str) -> tuple[str, str]:
+    """For a forwarded email (e.g. the FT's Unhedged forwarded from the reader's LSE inbox), credit the
+    original sender and drop the FW: prefix, so the source is the newsletter, not the forwarder."""
+    if not FWD.match(subject):
+        return name, subject
+    m = FWD_FROM.search(text[:3000])
+    return (m.group(1).strip() if m else name), FWD.sub("", subject)
 
 
 def check_inbox(settings: Settings, hours: int = 72) -> str:
