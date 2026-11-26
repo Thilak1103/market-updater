@@ -78,7 +78,7 @@ def test_friday_dry_run_builds_every_section(settings, db, fake_prices, monkeypa
     assert "**Base**" in md and "Bull" in md and "Bear" in md and "Reviewer 8/10" in md
     assert "**Why:** 1. The AI fear is aimed at a fifth of the business." in md
     assert "**Next test:** 26 Feb 2027, FY results: 2027 guidance above consensus" in md
-    assert "**Biggest risk:** Buybacks fall." in md and "Full pitch in the trade idea dashboard" in md
+    assert "**Biggest risk:** Buybacks fall." in md and "Full pitch in the pitch dashboard" in md
     assert "12.34%" not in md
     assert "TSCO.L" in md
     assert "## 📌 Stocks you follow" in md and "(ANT)" in md

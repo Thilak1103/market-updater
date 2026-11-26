@@ -198,6 +198,15 @@ class DB:
         cutoff = (datetime.utcnow() - timedelta(hours=since_hours)).isoformat(timespec="seconds")
         return self.q("SELECT * FROM items WHERE extracted=0 AND fetched>=? ORDER BY id", (cutoff,))
 
+    def resave_item(self, *, url: str, source_name: str, kind: str, title: str, text: str) -> int:
+        """Refresh an item the reader saved again: new text, counted as fetched now, re-extracted."""
+        cols = {r["name"] for r in self.q("PRAGMA table_info(items)")}
+        extra = ", summary=NULL" if "summary" in cols else ""
+        self.ex(f"UPDATE items SET source_name=?, source_type='inbox', kind=?, title=?, text=?, fetched=?, "
+                      f"extracted=0{extra} WHERE url=?",
+                (source_name, kind, title, text, datetime.now(timezone.utc).isoformat(timespec="seconds"), url))
+        return 1
+
     def items_since(self, since: datetime) -> list[sqlite3.Row]:
         return self.q("SELECT * FROM items WHERE fetched>=? ORDER BY id",
                       (since.isoformat(timespec="seconds"),))

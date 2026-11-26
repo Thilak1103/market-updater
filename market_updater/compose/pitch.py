@@ -111,7 +111,7 @@ or the reverse DCF; mark anything calculated from them "(our calculation)". All 
 same units as the entry price.
 
 Return JSON:
-- headline: one sentence, the whole idea.
+- headline: the whole idea in one sentence of at most 20 words, no numbers.
 - summary: two or three sentences: the variant view, why now, and what the price assumes.
 - business: plain_english (three to five sentences a student with no finance job could follow: what
   it is and how it makes money) and segments (each: name, what it sells with an example, who pays and
@@ -481,9 +481,10 @@ def _clean_spec(spec: dict, by_id: dict, texts: list[str], numbers: set[str], p:
 # -- rendering ---------------------------------------------------------------------
 
 def _pct(target: float | None, p: Pitch) -> str:
+    """Return on the position if the price reaches target (a short gains when the price falls)."""
     if not target or not p.entry:
         return ""
-    return f"{(target / p.entry - 1) * 100:+.0f}%".replace("-", "−")
+    return f"{(target / p.entry - 1) * 100 * p.sign:+.0f}%".replace("-", "−")
 
 
 def short_markdown(p: Pitch, page_link: str | None, best_of_day: bool = False) -> str:
@@ -493,7 +494,8 @@ def short_markdown(p: Pitch, page_link: str | None, best_of_day: bool = False) -
     targets = " · ".join(f"{lab} {fmt_price(s[k]['price'], p.unit)} ({_pct(s[k]['price'], p)})"
                          for k, lab in (("base", "**Base**"), ("bull", "Bull"), ("bear", "Bear")) if s.get(k))
     lines = [f"::: callout {icon} {colour}",
-             f"**{p.direction.upper()} {p.name} ({p.ticker})** · 6–12 months · entry {fmt_price(p.entry, p.unit)}",
+             f"**{p.direction.upper()} {p.name} ({p.ticker})** · 6–12 months · entry {fmt_price(p.entry, p.unit)}"
+             + (" · returns shown for the short" if p.direction == "Short" else ""),
              f"*{s.get('headline', '').rstrip('.')}.*",
              targets + (f" · Reviewer {p.score}/10" if p.score else ""),
              s.get("summary", "")]
@@ -509,7 +511,7 @@ def short_markdown(p: Pitch, page_link: str | None, best_of_day: bool = False) -
         lines.append(f"**Biggest risk:** {r['risk'].rstrip('.')}. {r['why_it_matters'].rstrip('.')}.")
     if best_of_day and p.critique:
         lines.append(f"**Where the reviewer pushed back:** {p.critique}")
-    more = f"[Read the full pitch →](notion:{page_link})" if page_link else "Full pitch in the trade idea dashboard"
+    more = f"[Read the full pitch →](notion:{page_link})" if page_link else "Full pitch in the pitch dashboard"
     lines.append(f"{more} · Tick **Following** there to track it.")
     lines.append(":::")
     return "\n".join(l for l in lines if l is not None and l != "")
@@ -525,7 +527,7 @@ def full_markdown(p: Pitch, today: date, best_of_day: bool = False) -> str:
            ":::",
            f"::: callout {icon} {colour}",
            f"**{p.direction.upper()} {p.name} ({p.ticker}) · 6–12 months (to {date.fromisoformat(p.horizon_end).strftime('%b %Y')}) · "
-           f"Entry {fmt_price(p.entry, p.unit)}**",
+           f"Entry {fmt_price(p.entry, p.unit)}**" + (" · returns shown for the short" if p.direction == "Short" else ""),
            " · ".join(f"**{lab}** {fmt_price(s[k]['price'], p.unit)} ({_pct(s[k]['price'], p)})"
                       for k, lab in (("base", "Base"), ("bull", "Bull"), ("bear", "Bear")) if s.get(k)),
            s.get("summary", ""),
@@ -678,7 +680,7 @@ STATUS_COLOR = {"On track": "green", "Watch": "orange", "Needs a tweak": "yellow
 def book_markdown(checks: list[dict], updates: list[dict], dashboard_id: str | None) -> str:
     rows = {c["id"]: c for c in checks}
     live = [rows.get(u["id"], u) for u in updates if u["following"]]
-    link = f"[Trade idea dashboard](notion:{dashboard_id})" if dashboard_id else "the trade idea dashboard"
+    link = f"[Pitch dashboard](notion:{dashboard_id})" if dashboard_id else "the pitch dashboard"
     if not live:
         n = sum(1 for u in updates if u["status"] == "Open")
         still = f" {n} pitch{'es are' if n != 1 else ' is'} open there." if n else ""

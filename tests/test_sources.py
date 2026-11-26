@@ -94,3 +94,19 @@ def test_saved_audio_is_transcribed_first():
     b = Item(url="b", title="Damodaran", text="", source_name="Prof G Markets (podcast)", source_type="inbox",
              kind="podcast", published=now, audio_url="b.mp3")
     assert listening_order([a, b], set(), ["fed"])[0] is b
+
+
+def test_a_resaved_inbox_link_is_refreshed_not_skipped(db):
+    from datetime import datetime, timezone
+    from market_updater.ingest import Item
+    from market_updater.ingest.collect import store
+    url = "https://www.youtube.com/watch?v=IgvDUUn3uuE"
+    old = Item(url=url, title="YouTube", text="cookie banner", source_name="Inbox", source_type="inbox",
+               kind="inbox", published=datetime.now(timezone.utc))
+    assert store(db, [old]) == 1
+    new = Item(url=url, title="Private credit cracks", text="Real transcript " * 50, source_name="Bloomberg (YouTube)",
+               source_type="inbox", kind="inbox", published=datetime.now(timezone.utc))
+    assert store(db, [new]) == 1
+    row = db.one("SELECT title, text, source_name FROM items WHERE url=?", (url,))
+    assert row["title"] == "Private credit cracks" and row["text"].startswith("Real transcript")
+    assert db.one("SELECT COUNT(*) n FROM items")["n"] == 1
