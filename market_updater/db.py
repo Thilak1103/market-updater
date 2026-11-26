@@ -68,6 +68,18 @@ CREATE TABLE IF NOT EXISTS ideas (
     source_names TEXT, pnl REAL DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS pitches (
+    id INTEGER PRIMARY KEY, notion_page_id TEXT, created TEXT,
+    ticker TEXT, name TEXT, direction TEXT, market TEXT, sector TEXT, currency TEXT,
+    entry_price REAL, base REAL, bull REAL, bear REAL, horizon_end TEXT,
+    headline TEXT, summary TEXT, conviction TEXT, score INTEGER, critique TEXT,
+    next_catalyst TEXT, next_catalyst_date TEXT,
+    status TEXT DEFAULT 'Open', outcome TEXT DEFAULT 'Open', closed TEXT, close_reason TEXT,
+    last_price REAL, ret REAL DEFAULT 0, best REAL DEFAULT 0, worst REAL DEFAULT 0,
+    following INTEGER DEFAULT 0, build_out INTEGER DEFAULT 0, briefing_url TEXT,
+    thesis_status TEXT, thesis_note TEXT, thesis_checked TEXT, spec TEXT
+);
+
 CREATE TABLE IF NOT EXISTS prices (
     ticker TEXT, date TEXT, close REAL, PRIMARY KEY (ticker, date)
 );

@@ -15,6 +15,8 @@ from .analysis import extract as X
 from .analysis import views as V
 from .compose import earnings_review as ER
 from .compose import ideas as I
+from .compose import pitch as PT
+from .compose import saved as SV
 from .compose import sections as S
 from .db import DB
 from .ingest.collect import collect_all, lookback
@@ -123,17 +125,17 @@ def daily(*, dry_run: bool = False, settings: Settings | None = None, db: DB | N
         if rv:
             reviews.append(rv)
 
-    # 5. Trade ideas: pick up what the reader ticked in Notion, mark open ideas, pitch new ones
+    # 5. The daily pitch: pick up what the reader ticked in Notion, mark open pitches, pitch a new one
     from .publish import pages as PG
     if notion is not None and not dry_run:
-        _step("sync following", problems, PG.sync_following, notion, db)
-    idea_updates = _step("idea updates", problems, I.update_open, db, prices, settings, day, default=[]) or []
+        _step("sync following", problems, PG.sync_following_pitches, notion, db)
+    idea_updates = _step("pitch updates", problems, PT.update_open, db, prices, day, default=[]) or []
     from .analysis import memory as MEM
     _step("record calls", problems, MEM.record_calls, settings, db, claims, prices, day, default=0)
     _step("judge calls", problems, MEM.score_calls, db, prices, default=0)
-    ideas = _step("trade ideas", problems, I.generate, settings, db, llm, prices, states, claims, reports, snap,
-                  day, default=[]) or []
-    checks = _step("thesis check", problems, I.thesis_check, llm, db, settings, claims, snap, idea_updates, day,
+    pitch = _step("pitch", problems, PT.generate, settings, db, llm, prices, states, claims, reports, snap, day)
+    ideas = [pitch] if pitch else []
+    checks = _step("thesis check", problems, PT.thesis_check, llm, db, settings, claims, idea_updates, day, snap,
                    default=[]) or []
 
     # 6. Writing
@@ -170,15 +172,17 @@ def daily(*, dry_run: bool = False, settings: Settings | None = None, db: DB | N
             if out:
                 out.reading_url = _step(f"reading {out.sector.key}", problems, PG.publish_reading, notion, day,
                                         out, S.reading_markdown(out, snap, names), cite_map)
-        for idea in ideas:
-            up = notion.upload_file(idea.chart, f"spread-{idea.spec['long']}-{idea.spec['short']}.png") if idea.chart else None
-            idea.markdown = idea.markdown.replace(
-                "{{chart}}", f"![The hedged spread over the last year, with entry, target and stop](upload:{up})" if up else "")
-    for idea in ideas:
-        idea.markdown = idea.markdown.replace("{{chart}}", "")
+    min_score = int((settings.get("pitch", {}) or {}).get("min_review_score", 7))
+    if pitch:
+        from .analysis.checks import link_citations as _lc
+        pitch.full = _lc(PT.full_markdown(pitch, day, pitch.score < min_score), cite_map)
+        if notion is not None and not dry_run:
+            pitch.page_id = _step("pitch page", problems, PG.create_pitch_page, notion, pitch, day)
+        pitch.markdown = PT.short_markdown(pitch, pitch.page_id, pitch.score < min_score)
     dash = (settings.get("notion.pages", {}) or {}).get("dashboard")
     md, cited = assemble(settings, day, snap, story, ideas, idea_updates, core, reviews, els, cons, deep,
-                         db, cite_map, pending, dash, checks, followed)
+                         db, cite_map, pending, dash, checks, followed,
+                         saved=_step("saved items", problems, SV.saved_items, db, now, default=[]))
     failed_core = sum(1 for s in core if not s or not s.blurb)
     status = "Published" if failed_core == 0 and story else "Partial"
 
@@ -195,10 +199,8 @@ def daily(*, dry_run: bool = False, settings: Settings | None = None, db: DB | N
                     f"Market briefing {day.strftime('%a %d %b %Y')}", md, status=status, themes=themes,
                     sectors_moved=moved, quiet=not snap.triggers, deep_dive=deep.title if deep else "")
         url, page_id = res if res else (None, None)
-        _step("save ideas", problems, I.save, db, ideas, day, url)
-        _step("push ideas", problems, PG.push_ideas, notion, db,
-              {u["id"]: f"{u['day']} of {u['max_days']}" for u in idea_updates},
-              {(i.spec["long"], i.spec["short"]): i.chart for i in ideas if i.chart})
+        new_id = _step("save pitch", problems, PT.save, db, pitch, day) if pitch else None
+        _step("update pitches", problems, PG.update_pitches, notion, db, url, new_id)
         _step("push views", problems, PG.push_views, notion, db)
         _step("propose debates", problems, PG.propose_debates, notion,
               V.proposed_debates(db, now - timedelta(days=7)), set(settings.debates))
@@ -285,7 +287,7 @@ def _table(head: list[str], rows: list[list[str]]) -> str:
 def assemble(settings, day, snap, story, ideas, idea_updates, core, reviews, els, cons, deep,
              db, claims_by_id, pending: list[str] | None = None,
              dashboard_id: str | None = None, checks: list[dict] | None = None,
-             followed: list | None = None) -> tuple[str, set[int]]:
+             followed: list | None = None, saved: list | None = None) -> tuple[str, set[int]]:
     from .analysis.checks import link_citations, tidy
 
     parts: list[str] = []
@@ -311,18 +313,17 @@ def assemble(settings, day, snap, story, ideas, idea_updates, core, reviews, els
         rows = [[r["name"], r["level"], r["move"], so.get(r["name"], "")] for r in snap.key_rows]
         add("📊 The numbers that matter", _table(["What", "Level", "Move", "So what"], rows))
 
-    # Trade ideas
+    # The daily pitch: the short version here, the full one in the dashboard
     idea_md = "\n".join(i.markdown for i in ideas)
-    if any(i.best_of_day for i in ideas):
-        idea_md = ("*Nothing cleared the 7/10 review bar today, so this is the strongest candidate, with the "
-                   "reviewer's main objection spelled out.*\n" + idea_md)
-    elif not ideas:
-        idea_md = "*No candidate survived the statistical checks today (correlation and evidence on both legs).*"
-    add("🎯 Trade ideas", idea_md, {c for i in ideas for c in i.cited})
-    add("📋 Open ideas: is the thesis playing out?", I.book_markdown(checks or [], idea_updates, dashboard_id))
+    if not ideas:
+        idea_md = "*No pitch today: the research or writing step failed (see the run log).*"
+    add("🎯 Today's pitch", idea_md, {c for i in ideas for c in i.cited})
+    add("📋 Pitches you follow: is the thesis playing out?", PT.book_markdown(checks or [], idea_updates, dashboard_id))
     if followed:
         from .compose import followed as FO
         add("📌 Stocks you follow", FO.markdown(followed), {c for f in followed for c in f.cited})
+    if saved:
+        add("📥 You saved", SV.markdown(saved))
 
     # Core sectors
     blocks = []
@@ -361,7 +362,7 @@ def assemble(settings, day, snap, story, ideas, idea_updates, core, reviews, els
     # Friday scorecard
     if is_friday(day):
         from .analysis import memory as MEM
-        add("🏁 Trade idea scorecard", I.scorecard(db))
+        add("🏁 Pitch scorecard", PT.scorecard(db))
         add("🗣 Who has been right", "*Every bullish or bearish call your sources make on a stock we track is "
             "judged after 20 trading days against its sector ETF. The trade ideas lean on the voices with the "
             "best record.*\n" + MEM.scorecard_markdown(db))

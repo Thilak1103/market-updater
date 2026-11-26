@@ -160,7 +160,8 @@ def summarise_long_items(db: DB, llm, limit: int = 12) -> int:
     """Write a point-by-point summary of new podcast episodes and long research pieces."""
     rows = db.q("SELECT id, title, source_name, kind, source_type, text FROM items WHERE summary IS NULL "
                 "AND ((kind='podcast' AND length(text) > 8000) OR (source_type IN ('substack','web_page','email') "
-                "AND length(text) > 15000)) ORDER BY published DESC LIMIT ?", (limit,))
+                "AND length(text) > 15000) OR (source_type='inbox' AND length(text) > 1500)) "
+                "ORDER BY (source_type='inbox') DESC, published DESC LIMIT ?", (limit,))
     n = 0
     for r in rows:
         try:

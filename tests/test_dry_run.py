@@ -1,3 +1,4 @@
+import pytest
 """End-to-end run with no network: fake model, synthetic prices, a stored item."""
 from datetime import datetime, timezone
 
@@ -27,6 +28,9 @@ def _offline(monkeypatch, tmp_path):
         "ticker": t, "price": 100.0, "short_pct_float": 0.032, "days_to_cover": 1.5, "target_mean": 120.0,
         "ratings": {"strongBuy": 5, "buy": 10, "hold": 6, "sell": 1, "strongSell": 0},
         "eps_up_30d": 4, "eps_down_30d": 1})
+    import market_updater.compose.pitch as PT
+    monkeypatch.setattr(PT, "yahoo_info", lambda t: {"currency": "GBp", "marketCap": 48_400_000_000,
+                                                     "freeCashflow": 2_800_000_000, "forwardPE": 17.9})
 
 
 def test_friday_dry_run_builds_every_section(settings, db, fake_prices, monkeypatch, tmp_path):
@@ -57,8 +61,8 @@ def test_friday_dry_run_builds_every_section(settings, db, fake_prices, monkeypa
                   now=now, collect=False)
     md = res.markdown
     assert "| Worth watching |" in res.markdown
-    for heading in ["## ☀️ Top line", "## 📊 The numbers that matter", "## 🎯 Trade ideas", "## 🏭 Your sectors",
-                    "## 📅 Earnings reviews", "## 🌍 Elsewhere", "## 🏁 Trade idea scorecard"]:
+    for heading in ["## ☀️ Top line", "## 📊 The numbers that matter", "## 🎯 Today's pitch", "## 🏭 Your sectors",
+                    "## 📅 Earnings reviews", "## 🌍 Elsewhere", "## 🏁 Pitch scorecard"]:
         assert heading in md, heading
     for gone in ["Market overview", "## Sources", "Source health", "not investment advice", "Where views diverge"]:
         assert gone not in md, gone
@@ -68,23 +72,16 @@ def test_friday_dry_run_builds_every_section(settings, db, fake_prices, monkeypa
     assert "[c1]" not in md and "[c" not in md and "](https://example.com/bull)" in md
     slok = db.one("SELECT c.speaker, i.url FROM claims c JOIN items i ON i.id=c.item_id WHERE c.speaker='Torsten Slok'")
     assert slok and slok["url"] == "https://apolloacademy.com/ai"
-    # Three ideas: the bad pair and the reused leg are rejected; an invented peer is dropped from comps
-    assert md.count("::: callout 📈 gray") == 2 and "NOTREAL" not in md
-    assert "**Long Nvidia · Short AMD**" in md and "Why AMD (short):" in md and "Why Nvidia (long):" in md
-    assert "Mkt cap" not in md and "ROIC" not in md and "EV/EBITDA" in md and "P/E fwd" in md
-    assert "Hedge ratio" not in md and "Statistics" not in md and "The pair isolates" not in md
-    # The review pass: variant view, dated catalysts, positioning table; the weakest idea is dropped
-    assert "**What the market thinks:**" in md and "**What we think:**" in md
-    assert "**Catalysts:** 17 Dec: Results day" in md and "Invented catalyst" not in md
-    assert "| Short interest | 3.2% of float (1.5 days) |" in md and "15 buy / 6 hold / 1 sell" in md
-    assert "Value at peers' multiple" in md and "| Position | Long 1.00 | Short " in md and "Build out" in md
-    assert "🎯 **Target**" in md and "🛑 **Stop**" in md and "⏳ **Horizon**" in md and "Conviction" not in md
-    assert "Fee income" not in md          # the long case with an unsourced number was cut
+    # The daily pitch: one stock, short version with a link to the full pitch
+    assert md.count("::: callout 📈 green") == 1 and "Ghost plc" not in md
+    assert "**LONG London Stock Exchange Group (LSEG.L)**" in md and "· 6–12 months · entry" in md
+    assert "**Base**" in md and "Bull" in md and "Bear" in md and "Reviewer 8/10" in md
+    assert "**Why:** 1. The AI fear is aimed at a fifth of the business." in md
+    assert "**Next test:** 26 Feb 2027, FY results: 2027 guidance above consensus" in md
+    assert "**Biggest risk:** Buybacks fall." in md and "Full pitch in the trade idea dashboard" in md
+    assert "12.34%" not in md
     assert "TSCO.L" in md
     assert "## 📌 Stocks you follow" in md and "(ANT)" in md
-    # The reviewer scored Goldman/Morgan Stanley 3/10, so it is not pitched at all, even though
-    # that leaves only two ideas
-    assert "Goldman Sachs" not in md, md[md.find("Goldman") - 400:md.find("Goldman") + 200]
     # Elsewhere is a table with a cause, and the sectors are one-paragraph callouts
     assert "| Sector | Move | What's behind it |" in md and "Oil supply news moved the group" in md
     assert "::: callout 💻 blue" in md and "**TMT** — Voices are turning bearish" in md
@@ -109,11 +106,35 @@ def test_model_outage_still_publishes_market_data(settings, db, fake_prices, mon
 
 def test_a_pitch_every_day_even_when_nothing_clears_review(settings, db, fake_prices, monkeypatch, tmp_path):
     _offline(monkeypatch, tmp_path)
-    settings.raw["trade_ideas"]["min_review_score"] = 10      # nothing can pass
+    settings.raw["pitch"]["min_review_score"] = 10      # nothing can pass
     llm = FakeLLM(fake_responder)
     now = datetime(2026, 11, 20, 6, 15, tzinfo=timezone.utc)
     md = R.daily(dry_run=True, settings=settings, db=db, llm=llm, prices=fake_prices, notion=None,
                  now=now, collect=False).markdown
-    assert md.count("::: callout 📈 gray") == 1
-    assert "strongest candidate" in md and "**Where the reviewer pushed back:**" in md
-    assert "You aren't following any ideas yet" in md or "| Idea | Day |" not in md
+    assert md.count("::: callout 📈 green") == 1
+    assert "**Where the reviewer pushed back:**" in md
+    assert "You aren't following any pitches yet" in md
+
+
+def test_reverse_dcf_and_tracking(db):
+    from datetime import date
+    import pandas as pd
+    from market_updater.compose import pitch as PT
+    md, out = PT.reverse_dcf(0.058, 9888.0, "p")
+    row = next(r for r in out["rows"] if r["g"] == 0.08 and r["k"] == 0.085)
+    assert row["years"] in (1, 2) and 11500 < row["value5"] < 13500 and "9,888" not in md
+    assert PT.fcf_yield({"freeCashflow": 2.8e9, "marketCap": 48.4e9}) == pytest.approx(0.0579, abs=1e-3)
+    assert PT.fcf_yield({"freeCashflow": 2.8e9, "marketCap": 48.4e11}) == pytest.approx(0.0579, abs=1e-3)
+    db.ex("INSERT INTO pitches(created,ticker,name,direction,entry_price,base,bear,horizon_end,spec) VALUES "
+          "('2026-11-20','LSEG.L','LSEG','Long',100,115,85,'2027-11-20','{}')")
+    db.ex("INSERT INTO pitches(created,ticker,name,direction,entry_price,base,bear,horizon_end,spec) VALUES "
+          "('2026-11-20','XYZ','XYZ','Short',100,80,120,'2027-11-20','{}')")
+
+    class P:
+        def fetch(self, tickers, period):
+            idx = pd.bdate_range(end="2026-12-01", periods=3)
+            return pd.DataFrame({"LSEG.L": [100, 105, 116], "XYZ": [100, 95, 90]}, index=idx)
+    ups = {u["ticker"]: u for u in PT.update_open(db, P(), date(2026, 12, 1))}
+    assert ups["LSEG.L"]["status"] == "Closed" and ups["LSEG.L"]["outcome"] == "Hit base case"
+    assert ups["XYZ"]["status"] == "Open" and ups["XYZ"]["ret"] == pytest.approx(0.10)
+    assert ups["XYZ"]["progress"] == pytest.approx(0.5)

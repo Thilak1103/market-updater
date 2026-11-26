@@ -243,3 +243,75 @@ def sync_sources(notion: N.Notion, yaml_sources: list) -> dict:
             notion.update_page(row["id"], {"Type": N.select("Press mentions")})
             filled.append(s.name)
     return {"filled": filled, "added": added}
+
+
+# -- single-stock pitches (the trade idea dashboard) -----------------------------------
+
+OUTCOME_OPEN = "Open"
+
+
+def _pitch_props(r) -> dict:
+    sign = 1 if r["direction"] == "Long" else -1
+    to_base = ((r["base"] / r["entry_price"] - 1) * sign) if r["base"] and r["entry_price"] else None
+    return {k: v for k, v in {
+        "Last price": N.number(round(r["last_price"], 4)) if r["last_price"] is not None else None,
+        "Return so far": N.number(round(r["ret"] or 0, 4)),
+        "Best so far": N.number(round(r["best"] or 0, 4)), "Worst so far": N.number(round(r["worst"] or 0, 4)),
+        "Progress to base": N.number(round((r["ret"] or 0) / to_base, 3)) if to_base else None,
+        "Status": N.select(r["status"]), "Outcome": N.select(r["outcome"] or OUTCOME_OPEN),
+        "Thesis check": N.select(r["thesis_status"]) if r["thesis_status"] else None,
+        "Thesis note": N.rich(truncate(CITE_RE.sub("", r["thesis_note"] or ""), 1900)) if r["thesis_note"] else None,
+    }.items() if v is not None}
+
+
+def create_pitch_page(notion: N.Notion, p, today) -> str | None:
+    """The full pitch as a page in the Ideas database (the dashboard). Returns its id."""
+    s = p.spec
+    sign = p.sign
+    pct = lambda v: N.number(round((v / p.entry - 1) * sign, 4)) if v and p.entry else N.number(None)
+    nxt = (s.get("catalysts") or [{}])[0]
+    props = {
+        "Idea": N.title(f"{p.direction} {p.name} ({p.ticker})" + (f": {s.get('headline', '').rstrip('.')}" if s.get("headline") else "")),
+        "Ticker": N.rich(p.ticker), "Company": N.rich(p.name), "Direction": N.select(p.direction),
+        "Market": N.select(p.market), "Sector": N.select(p.sector if p.sector in SECTOR_LABELS.values() else "Elsewhere"),
+        "Entry date": N.date(today.isoformat()), "Entry price": N.number(round(p.entry, 4)),
+        "Last price": N.number(round(p.entry, 4)),
+        "Base case": N.number((s.get("base") or {}).get("price")), "Bull case": N.number((s.get("bull") or {}).get("price")),
+        "Bear case": N.number((s.get("bear") or {}).get("price")),
+        "Upside to base": pct((s.get("base") or {}).get("price")),
+        "Downside to bear": pct((s.get("bear") or {}).get("price")),
+        "Horizon end": N.date(p.horizon_end), "Conviction": N.select(s.get("conviction") or "Medium"),
+        "Review score": N.number(p.score or None),
+        "Next catalyst": N.rich(truncate(f"{nxt.get('date', '')}: {nxt.get('event', '')}", 1900)) if nxt else N.rich(""),
+        "Thesis": N.rich(truncate(CITE_RE.sub("", s.get("summary", "")), 1900)),
+        "What proves it wrong": N.rich(truncate(" ".join(s.get("wrong_if") or []), 1900)),
+        "Status": N.select("Open"), "Outcome": N.select("Open"), "Return so far": N.number(0),
+    }
+    page = notion.create_page("ideas", props, to_blocks(p.full) if p.full else None, icon="📈" if sign > 0 else "📉")
+    return page["id"]
+
+
+def update_pitches(notion: N.Notion, db: DB, briefing_url: str | None = None, new_id: int | None = None) -> None:
+    if new_id and briefing_url:
+        r = db.one("SELECT notion_page_id FROM pitches WHERE id=?", (new_id,))
+        if r and r["notion_page_id"]:
+            db.ex("UPDATE pitches SET briefing_url=? WHERE id=?", (briefing_url, new_id))
+            notion.update_page(r["notion_page_id"], {"Briefing": N.url(briefing_url)})
+    for r in db.q("SELECT * FROM pitches WHERE notion_page_id IS NOT NULL AND (status='Open' OR closed>=date('now','-1 day'))"):
+        props = _pitch_props(r)
+        props["Days held"] = N.number((date.today() - date.fromisoformat(r["created"][:10])).days)
+        try:
+            notion.update_page(r["notion_page_id"], props)
+        except Exception as e:
+            log.warning("Could not update pitch %s: %s", r["id"], e)
+
+
+def sync_following_pitches(notion: N.Notion, db: DB) -> int:
+    ticked = {p["id"] for p in notion.query("ideas", filter={"property": "Following", "checkbox": {"equals": True}})}
+    built = {p["id"] for p in notion.query("ideas", filter={"property": "Build out", "checkbox": {"equals": True}})}
+    n = 0
+    for r in db.q("SELECT id, notion_page_id FROM pitches WHERE notion_page_id IS NOT NULL"):
+        db.ex("UPDATE pitches SET following=?, build_out=? WHERE id=?",
+              (int(r["notion_page_id"] in ticked), int(r["notion_page_id"] in built), r["id"]))
+        n += r["notion_page_id"] in ticked
+    return n

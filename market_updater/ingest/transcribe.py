@@ -78,9 +78,20 @@ def transcribe_url(audio_url: str, api_key: str | None = None, speed: float = SP
     if not shutil.which("ffmpeg"):
         raise TranscriptionError("ffmpeg is not installed")
     with tempfile.TemporaryDirectory() as tmp:
-        tmpd = Path(tmp)
-        raw = tmpd / "raw"
+        raw = Path(tmp) / "raw"
         _download(audio_url, raw)
+        return transcribe_file(raw, api_key, speed)
+
+
+def transcribe_file(raw: Path, api_key: str | None = None, speed: float = SPEED) -> tuple[str, float]:
+    """Transcribe an audio file already on disk (used for YouTube audio)."""
+    api_key = api_key or os.environ.get("GROQ_API_KEY")
+    if not api_key:
+        raise TranscriptionError("GROQ_API_KEY not set")
+    if not shutil.which("ffmpeg"):
+        raise TranscriptionError("ffmpeg is not installed")
+    with tempfile.TemporaryDirectory() as tmp:
+        tmpd = Path(tmp)
         small = tmpd / "speech.mp3"
         tempo = ["-filter:a", f"atempo={speed}"] if speed and abs(speed - 1) > 0.01 else []
         _run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(raw), *tempo, "-ac", "1", "-ar", "16000",

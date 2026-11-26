@@ -98,3 +98,27 @@ def test_large_budgets_are_streamed(settings, db):
     llm._anthropic = NS(messages=msgs)
     assert llm._claude_json("claude-opus-5-5", "trade_ideas", "s", "u", {"type": "object"}, 8000) == {"ok": 1}
     assert msgs.streamed[0]["max_tokens"] == 32_000
+
+
+def test_research_uses_web_search_and_continues_after_pause(settings, db):
+    llm = LLM(settings, db)
+    calls = []
+    usage = NS(input_tokens=10, output_tokens=5, cache_read_input_tokens=0,
+               server_tool_use=NS(web_search_requests=2))
+
+    def create(**kw):
+        calls.append(kw)
+        result = NS(type="web_search_tool_result", content=[NS(url="https://lseg.com/q3", title="LSEG Q3")])
+        if len(calls) == 1:
+            return NS(content=[NS(type="text", text="Business: "), result], stop_reason="pause_turn", usage=usage)
+        return NS(content=[NS(type="text", text="data and venues [LSEG](https://lseg.com/q3).")],
+                  stop_reason="end_turn", usage=usage)
+    llm._anthropic = NS(messages=NS(create=create))
+    llm._claude_allowed = lambda tier: True
+    text, sources = llm.research(tier="trade_ideas", purpose="pitch_research", system="s", user="u", max_searches=5)
+    assert text == "Business: data and venues [LSEG](https://lseg.com/q3)."
+    assert sources == [{"url": "https://lseg.com/q3", "title": "LSEG Q3"}]
+    assert calls[0]["tools"][0]["type"].startswith("web_search") and calls[0]["tools"][0]["max_uses"] == 5
+    assert calls[1]["messages"][-1]["role"] == "assistant"
+    spent = db.one("SELECT SUM(cost_usd) s FROM llm_usage WHERE model='web_search'")["s"]
+    assert abs(spent - 0.04) < 1e-9
