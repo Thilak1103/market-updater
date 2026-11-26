@@ -39,7 +39,14 @@ def _repeat_of(db: DB, title: str) -> str | None:
 def store(db: DB, items: list[Item]) -> int:
     n = 0
     for it in items:
-        if not it.url or db.seen_url(it.url):
+        if not it.url:
+            continue
+        if db.seen_url(it.url):
+            # Something Thilak saved again (or that an older run stored badly) is re-read and
+            # re-surfaced: refresh the stored copy instead of skipping it as already seen.
+            if it.source_type == "inbox" and it.text:
+                n += db.resave_item(url=it.url, source_name=it.source_name, kind=it.kind, title=it.title[:500],
+                                    text=it.text[:MAX_TEXT * (3 if it.kind == 'podcast' else 1)])
             continue
         fp = fingerprint(it.title, it.text)
         if db.seen_fingerprint(fp):
@@ -81,6 +88,11 @@ def _transcribe(db: DB, items: list[Item], every_run: set[str], budget_min: floa
     used = 0.0
     for it in listening_order([i for i in items if i.audio_url], recap or set(), interests or []):
         if db.one("SELECT 1 FROM transcribed WHERE audio_url=?", (it.audio_url,)):
+            if it.source_type == "inbox":     # saved by hand but already transcribed from its feed: reuse it
+                prev = db.one("SELECT text FROM items WHERE title=? AND length(text)>2000 AND source_type!='inbox' "
+                              "ORDER BY id DESC", (it.title,))
+                if prev:
+                    it.text = f"{it.text}\n\n{prev['text']}" if it.text else prev["text"]
             continue
         if used >= budget_min:
             log.info("Audio budget reached; %s keeps its show notes", it.title)
