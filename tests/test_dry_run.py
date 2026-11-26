@@ -138,3 +138,16 @@ def test_reverse_dcf_and_tracking(db):
     assert ups["LSEG.L"]["status"] == "Closed" and ups["LSEG.L"]["outcome"] == "Hit base case"
     assert ups["XYZ"]["status"] == "Open" and ups["XYZ"]["ret"] == pytest.approx(0.10)
     assert ups["XYZ"]["progress"] == pytest.approx(0.5)
+
+
+def test_valuation_methods_survive_the_number_check():
+    from market_updater.compose import pitch as PT
+    p = PT.Pitch(ticker="STLAM.MI", name="Stellantis", direction="Short", sector="Autos", market="Europe",
+                 currency="EUR", unit="EUR", entry=3.4655, horizon_end="2027-11-26")
+    spec = {"base": {"price": 2.17, "how": "Our 2027 EPS of €0.57 at the current 3.8x multiple."},
+            "bull": {"price": 1.75, "how": "No growth on 2026 EPS."},
+            "bear": {"price": 4.96, "how": "The Street's average target of €4.96."}}
+    out = PT._clean_spec(spec, {}, [], set(), p)
+    assert out["base"]["how"].endswith("(our calculation).") and "0.57" in out["base"]["how"]
+    assert "4.96" in out["bear"]["how"]
+    assert PT._pct(2.17, p) == "+37%" and PT._pct(4.96, p) == "−43%"

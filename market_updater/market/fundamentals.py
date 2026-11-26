@@ -96,7 +96,7 @@ def yahoo_fundamentals(ticker: str) -> dict:
     margin = info.get("ebitdaMargins")
     growth = info.get("revenueGrowth")
     out = {
-        "name": info.get("shortName") or info.get("longName"),
+        "name": " ".join((info.get("shortName") or info.get("longName") or "").split()) or None,
         "currency": info.get("currency"),
         "market_cap": info.get("marketCap"), "ev": info.get("enterpriseValue"),
         "ev_sales": info.get("enterpriseToRevenue"), "ev_ebitda": info.get("enterpriseToEbitda"),

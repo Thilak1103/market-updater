@@ -464,6 +464,11 @@ def _ask(llm, purpose, system, user, schema, max_tokens) -> dict | None:
 
 
 def _clean_spec(spec: dict, by_id: dict, texts: list[str], numbers: set[str], p: Pitch) -> dict:
+    # The pitch's own targets and entry are fair game anywhere in it
+    texts = texts + [json.dumps({k: (spec.get(k) or {}).get("price") for k in ("base", "bull", "bear")}),
+                     f"{p.entry:.2f} {p.entry:.4f}"]
+    raw = {k: (spec.get(k) or {}).get("how", "") for k in ("base", "bull", "bear")}
+
     def fix(v):
         if isinstance(v, str):
             out, ids, probs = checked(v, by_id, texts, numbers)
@@ -475,7 +480,13 @@ def _clean_spec(spec: dict, by_id: dict, texts: list[str], numbers: set[str], p:
         if isinstance(v, dict):
             return {k: (fix(x) if k not in ("price",) else x) for k, x in v.items()}
         return v
-    return fix(spec)
+    out = fix(spec)
+    # A valuation method is our own arithmetic: if the number check emptied it, keep it, labelled
+    for k, text in raw.items():
+        if out.get(k) is not None and not (out[k].get("how") or "").strip() and text:
+            t = text.strip().rstrip(".")
+            out[k]["how"] = t + ("" if "our calculation" in t else " (our calculation)") + "."
+    return out
 
 
 # -- rendering ---------------------------------------------------------------------
